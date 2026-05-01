@@ -8,37 +8,28 @@
 
 ## Phase 0: Gap Analysis Summary
 
-### Critical Gaps Identified
+All gaps below have been addressed. Status column reflects current state.
 
-| Gap | Severity | Impact |
-|-----|----------|--------|
-| **Precompile Support** | CRITICAL | Major EVM contracts use precompiles (SHA256, ECRecover) |
-| **Memory Bounds** | HIGH | MLOAD reads 4 bytes not 32; no memory expansion gas |
-| **Memory Commitment** | HIGH | No Poseidon2 proof for memory state |
-| **Jump Dest Validity** | MEDIUM | JUMP to non-JUMPDEST allowed in current impl |
-| **Stack Underflow** | MEDIUM | POP on empty stack allowed |
-| **Gas Refund Tracking** | MEDIUM | SSTORE refund tracking incomplete |
-| **Call Depth Limit** | LOW | 1024 depth limit not enforced |
-| **Return Data** | LOW | RETURNDATASIZE/COPY verification partial |
+### Gap Status
+
+| Gap | Severity | Status | Notes |
+|-----|----------|--------|-------|
+| **Precompile Support** | CRITICAL | ✅ FIXED | All 9 precompiles implemented with constraints |
+| **Memory Bounds** | HIGH | ✅ FIXED | MLOAD/MSTORE now read/write 32 bytes |
+| **Memory Commitment** | HIGH | ✅ FIXED | Poseidon2 memory commitment in trace |
+| **Jump Dest Validity** | MEDIUM | ✅ FIXED | JUMPDEST constraint verified |
+| **Stack Underflow** | MEDIUM | ✅ FIXED | verify_stack_underflow implemented |
+| **Gas Refund Tracking** | MEDIUM | ✅ FIXED | verify_gas_refund implemented |
+| **Call Depth Limit** | LOW | ✅ FIXED | verify_call_depth_limit implemented |
+| **Return Data** | LOW | ✅ FIXED | RETURNDATASIZE/COPY verified |
 
 ### What We Have (Working)
 - revm Inspector integration (step/step_end work)
 - ~80 opcodes with basic stack constraints
 - Storage tracking (SLOAD/SSTORE)
 - Labrador batch proving at ~100-150ms
-
-### What We Need (Based on subagent research)
-
-**1. Precompile Support** - Currently NONE
-- ECRecover (0x01), SHA256 (0x02), RIPEMD160 (0x03), Identity (0x04)
-- Modexp (0x05), bn128_add/mul/pair (0x06-0x08), Blake2F (0x09)
-- Inspector `call`/`call_end` hooks called for precompiles, but `step`/`step_end` NOT called
-
-**2. Memory Verification** - Currently BROKEN
-- MLOAD only reads 4 bytes instead of 32
-- MSTORE only writes 4 bytes instead of 32
-- No memory expansion gas calculation
-- No cryptographic memory commitment
+- All 9 precompile types supported
+- Full memory model with 32-byte reads/writes
 
 ---
 
@@ -537,7 +528,7 @@ let proof = prover.prove_per_opcode(&prover, &trace)?;
 let running = prover.prove_opcode_step(&prover, &row, running)?;
 ```
 
-### 与传统批量证明对比
+### Comparison with Traditional Batch Proving
 
 | Aspect | Batch Proving | Per-Opcode Proving |
 |--------|---------------|-------------------|
