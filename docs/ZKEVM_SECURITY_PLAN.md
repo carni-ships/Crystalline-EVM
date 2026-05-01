@@ -21,12 +21,14 @@ Lattice-native zkEVM using ANE-accelerated proving on Apple Silicon.
 
 ### Constraint Modes
 
-| Mode | Security | Description |
-|------|----------|-------------|
+| Mode | Security Bits | Description |
+|------|---------------|-------------|
 | StateDiff | Trust-based | Fast state transition verification |
 | Minimal | ~80 bits | Basic state validity |
 | Medium | ~100 bits | Critical opcode checks |
 | Full | ~128 bits | Complete per-row verification |
+
+**Security Bits**: Approximate security level in bits against collision attacks. Full mode achieves ~128 bits via Labrador SNARK with L=256 lattice dimension.
 
 See [CONSTRAINT_MODES.md](./CONSTRAINT_MODES.md) for detailed security analysis.
 
