@@ -155,7 +155,7 @@ For detailed security analysis, see [docs/CONSTRAINT_MODES.md](docs/CONSTRAINT_M
 ## Related Projects
 
 - **[Anemone](https://github.com/carni-ships/Anemone)**: ANE acceleration primitives for lattice-based ZK. Crystalline-EVM uses Anemone for MatVec and Poseidon2 operations.
-- **[Labrador](https://github.com/carni-ships/labrador)**: Lattice SNARK protocol (ML-PCS based) used for proof generation.
+- **[Labrador](https://eprint.iacr.org/2022/1341.pdf)**: Lattice SNARK protocol (ML-PCS based) used for proof generation.
 - **[revm](https://github.com/bluealloy/revm)**: High-performance Ethereum Virtual Machine implementation in Rust.
 
 ---

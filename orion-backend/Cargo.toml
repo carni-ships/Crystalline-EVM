@@ -20,7 +20,3 @@ path = "sys/orion-sys"
 [dev-dependencies]
 # Tests use the mock FFI which is defined in tests/mock_orion_sys.rs
 # and included directly into test files
-
-[[example]]
-name = "simple"
-path = "examples/simple.rs"
