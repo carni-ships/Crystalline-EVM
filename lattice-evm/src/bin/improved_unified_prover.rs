@@ -451,10 +451,13 @@ fn main() {
     println!("=== Improved Unified Prover ===\n");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let block_num = match rt.block_on(get_current_block_number()) {
-        Ok(n) => { println!("Current block: #{}\n", n); n }
-        Err(e) => { println!("Failed: {}", e); return; }
-    };
+
+    // Use FIXED block for consistent benchmarking
+    // Change this to benchmark a specific block, or fetch current
+    let block_num: u64 = 21_500_000;  // Fixed block for consistent comparison
+    // let block_num = match rt.block_on(get_current_block_number()) { ... };
+
+    println!("Using fixed block: #{} for consistent benchmarking\n", block_num);
 
     println!("Fetching block...");
     let block = match rt.block_on(EthereumBlock::fetch(block_num)) {
@@ -470,7 +473,7 @@ fn main() {
     println!("Block #{}: {} transactions ({} transfers, {} contracts)\n",
         block_num, total_txs, transfers, contracts);
 
-    // Collect contract bytecode with calldata
+    // Collect contract bytecode with calldata ONCE
     println!("Collecting contract bytecode...");
     use std::collections::HashMap;
     use rayon::prelude::*;
@@ -515,134 +518,85 @@ fn main() {
     println!("  Collected {} contracts\n", codes.len());
     let contract_data = codes;
 
-    // Phase 1: Execute all contracts and collect trace data (parallelized)
-    println!("=== Phase 1: Execution ===");
-    let exec_start = Instant::now();
+    // Benchmark ALL modes on the SAME contracts
+    println!("=== Benchmarking All Modes on Same Contracts ===\n");
 
-    let contract_refs: Vec<(&String, &Vec<u8>, &Vec<u8>)> = contract_data.iter().map(|(a, c, d)| (a, c, d)).collect();
+    let modes = vec![
+        ConstraintMode::StateDiff,
+        ConstraintMode::Minimal,
+        ConstraintMode::Medium,
+        ConstraintMode::Full,
+    ];
 
-    let results: Vec<(String, Vec<u8>, Vec<u32>)> = contract_refs.par_iter()
-        .map(|(addr, code, calldata)| {
-            process_contract(addr, code, calldata)
-        })
-        .collect();
+    for mode in modes {
+        // Set constraint mode for this iteration
+        std::env::set_var("ZKEVM_CONSTRAINT_MODE", match mode {
+            ConstraintMode::StateDiff => "statediff",
+            ConstraintMode::Minimal => "minimal",
+            ConstraintMode::Medium => "medium",
+            ConstraintMode::Full => "full",
+        });
 
-    let mode = get_constraint_mode();
+        println!("--- Mode: {:?} ---", mode);
 
-    let mut valid_contracts: Vec<(String, Vec<u8>, Vec<u32>)> = Vec::new();
-    let mut failed_exec: usize = 0;
-    let mut revm_validated: usize = 0;
+        let exec_start = Instant::now();
+        let contract_refs: Vec<(&String, &Vec<u8>, &Vec<u8>)> = contract_data.iter().map(|(a, c, d)| (a, c, d)).collect();
 
-    for (addr, err, elements) in results {
-        if elements.is_empty() {
-            failed_exec += 1;
+        let results: Vec<(String, Vec<u8>, Vec<u32>)> = contract_refs.par_iter()
+            .map(|(addr, code, calldata)| {
+                process_contract(addr, code, calldata)
+            })
+            .collect();
+
+        let exec_time = exec_start.elapsed().as_millis() as f64;
+
+        let valid_count = results.iter().filter(|(_, _, e)| !e.is_empty()).count();
+        let failed_count = results.iter().filter(|(_, _, e)| e.is_empty()).count();
+
+        println!("  Valid contracts: {}", valid_count);
+        println!("  Failed: {}", failed_count);
+        println!("  Execution time: {:.0} ms", exec_time);
+
+        // Prove phase
+        let prove_start = Instant::now();
+        let prover = match Prover::new(ProverConfig::default()) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("  Prover error: {:?}", e);
+                continue;
+            }
+        };
+
+        let mut all_elements: Vec<u32> = Vec::new();
+        for (_, _, elements) in &results {
+            if !elements.is_empty() {
+                all_elements.extend(elements);
+            }
+        }
+
+        let batch_size = if mode == ConstraintMode::StateDiff {
+            BATCH_SIZE_STATEDIFF
         } else {
-            // Skip revm check for StateDiff - it's not relevant
-            if mode != ConstraintMode::StateDiff {
-                let is_revm = err.is_empty() && elements.len() == 10 && elements[2] == 0 && elements[5] == 0 && elements[8] == 0 && elements[9] == 0;
-                if is_revm {
-                    revm_validated += 1;
+            BATCH_SIZE
+        };
+
+        let batches: Vec<Vec<u32>> = all_elements.chunks(batch_size)
+            .map(|chunk| {
+                let mut batch = chunk.to_vec();
+                while batch.len() < batch_size {
+                    batch.push(0);
                 }
-            }
-            valid_contracts.push((addr, Vec::new(), elements));
-        }
+                batch
+            })
+            .collect();
+
+        let (proven, total_batches, _) = prove_batch(&batches, &prover);
+        let prove_time = prove_start.elapsed().as_millis() as f64;
+
+        println!("  Batches: {}, Proven: {}", total_batches, proven);
+        println!("  Proving time: {:.0} ms", prove_time);
+        println!("  Total time: {:.0} ms ({:.2}s)\n", exec_time + prove_time, (exec_time + prove_time) / 1000.0);
     }
 
-    let exec_time_total = exec_start.elapsed().as_millis() as f64;
-    println!("\nExecution complete:");
-    println!("  Mode: {:?}", mode);
-    println!("  Valid contracts: {}", valid_contracts.len());
-    if mode != ConstraintMode::StateDiff {
-        println!("  Revm fallback validated: {}", revm_validated);
-    }
-    println!("  Failed (execution error): {}", failed_exec);
-    println!("  Execution time: {:.0} ms", exec_time_total);
-
-    if valid_contracts.is_empty() {
-        println!("No valid contracts to prove!");
-        return;
-    }
-
-    // Phase 2: Batch proving
-    println!("\n=== Phase 2: Batch Proving ===");
-
-    let prover = match Prover::new(ProverConfig::default()) {
-        Ok(p) => p,
-        Err(e) => {
-            println!("Failed to create prover: {:?}", e);
-            return;
-        }
-    };
-
-    let mut all_elements: Vec<u32> = Vec::new();
-    for (_, _, elements) in &valid_contracts {
-        all_elements.extend(elements);
-    }
-
-    // Use larger batch size for StateDiff (smaller witnesses)
-    let batch_size = if mode == ConstraintMode::StateDiff {
-        BATCH_SIZE_STATEDIFF
-    } else {
-        BATCH_SIZE
-    };
-
-    let batches: Vec<Vec<u32>> = all_elements.chunks(batch_size)
-        .map(|chunk| {
-            let mut batch = chunk.to_vec();
-            while batch.len() < batch_size {
-                batch.push(0);
-            }
-            batch
-        })
-        .collect();
-
-    let prove_start = Instant::now();
-    let (proven, total_batches, _) = prove_batch(&batches, &prover);
-    let prove_time_total = prove_start.elapsed().as_millis() as f64;
-
-    println!("\nBatch proving complete:");
-    println!("  Total batches: {}", total_batches);
-    println!("  Proven: {}", proven);
-    println!("  Proving time: {:.0} ms", prove_time_total);
-
-    // Phase 3: Compose root
-    println!("\n=== Phase 3: Root Composition ===");
-
-    let compose_start = Instant::now();
-    let mut root = 0u32;
-    for batch in &batches {
-        root = Poseidon2::hash_pair(root, Poseidon2::hash_pair(batch[0], batch[1]));
-    }
-    let compose_time = compose_start.elapsed().as_millis() as f64;
-
-    println!("Root commitment: {}", root);
-    println!("Compose time: {:.2} ms", compose_time);
-
-    // Summary
-    let total_time = exec_time_total + prove_time_total + compose_time;
-
-    println!("\n=== Summary ===");
-    println!("Total time: {:.0} ms ({:.2}s)", total_time, total_time / 1000.0);
-    println!("  Execution: {:.0} ms ({:.1}%)", exec_time_total, (exec_time_total / total_time) * 100.0);
-    println!("  Proving: {:.0} ms ({:.1}%)", prove_time_total, (prove_time_total / total_time) * 100.0);
-    println!("  Compose: {:.0} ms ({:.1}%)", compose_time, (compose_time / total_time) * 100.0);
-
-    // Extrapolation
-    let success_rate = valid_contracts.len() as f64 / contract_data.len().max(1) as f64;
-    let full_block_contracts = contracts as f64 * success_rate;
-    let per_contract_time = total_time / valid_contracts.len().max(1) as f64;
-    let estimated_full_block = per_contract_time * full_block_contracts;
-
-    println!("\n=== Extrapolation ===");
-    println!("Success rate: {:.1}%", success_rate * 100.0);
-    println!("Valid contracts in block: ~{:.0}", full_block_contracts);
-    println!("Per-contract time: {:.2} ms", per_contract_time);
-    println!("Estimated full block time: {:.0} ms ({:.1}s)",
-        estimated_full_block, estimated_full_block / 1000.0);
-
-    if estimated_full_block < 12000.0 {
-        println!("✓ UNDER 12s TARGET!");
-    } else {
-        println!("✗ OVER 12s target by {:.1}s", (estimated_full_block - 12000.0) / 1000.0);
-    }
+    println!("=== Done ===");
 }
