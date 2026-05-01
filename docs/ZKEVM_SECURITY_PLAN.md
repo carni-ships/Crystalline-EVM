@@ -1,553 +1,142 @@
-# zkEVM Security Gap Closure Plan
+# Crystalline-EVM Security Architecture
 
 **Date**: 2026-05-01
-**Goal**: Achieve production-grade zkEVM security comparable to Polygon zkEVM / zkSync Era
-**Performance Budget**: 12s max for Full mode (currently at ~1.5s - significant headroom)
+
+Lattice-native zkEVM using ANE-accelerated proving on Apple Silicon.
 
 ---
 
-## Phase 0: Gap Analysis Summary
+## Current Capabilities
 
-All gaps below have been addressed. Status column reflects current state.
+### EVM Compatibility
 
-### Gap Status
+| Feature | Status |
+|---------|--------|
+| Opcodes | ~80 supported |
+| Precompiles | All 9 standard supported |
+| Memory Model | 32-byte reads/writes |
+| Stack Safety | Underflow/overflow checked |
+| Jump Integrity | JUMPDEST validity enforced |
+| Gas Tracking | EIP-1559, refunds, call depth |
 
-| Gap | Severity | Status | Notes |
-|-----|----------|--------|-------|
-| **Precompile Support** | CRITICAL | ✅ FIXED | All 9 precompiles implemented with constraints |
-| **Memory Bounds** | HIGH | ✅ FIXED | MLOAD/MSTORE now read/write 32 bytes |
-| **Memory Commitment** | HIGH | ✅ FIXED | Poseidon2 memory commitment in trace |
-| **Jump Dest Validity** | MEDIUM | ✅ FIXED | JUMPDEST constraint verified |
-| **Stack Underflow** | MEDIUM | ✅ FIXED | verify_stack_underflow implemented |
-| **Gas Refund Tracking** | MEDIUM | ✅ FIXED | verify_gas_refund implemented |
-| **Call Depth Limit** | LOW | ✅ FIXED | verify_call_depth_limit implemented |
-| **Return Data** | LOW | ✅ FIXED | RETURNDATASIZE/COPY verified |
+### Constraint Modes
 
-### What We Have (Working)
-- revm Inspector integration (step/step_end work)
-- ~80 opcodes with basic stack constraints
-- Storage tracking (SLOAD/SSTORE)
-- Labrador batch proving at ~100-150ms
-- All 9 precompile types supported
-- Full memory model with 32-byte reads/writes
+| Mode | Security | Description |
+|------|----------|-------------|
+| StateDiff | Trust-based | Fast state transition verification |
+| Minimal | ~80 bits | Basic state validity |
+| Medium | ~100 bits | Critical opcode checks |
+| Full | ~128 bits | Complete per-row verification |
 
----
-
-## Phase 1: Precompile Support (4-6 hours)
-
-### 1.1 Add Precompile Tracking to Inspector
-
-**File**: `src/evm/full_evm.rs`
-
-**What**: Extend `TraceInspector` to track precompile calls with their inputs/outputs
-
-**Reference**: `~/.cargo/registry/src/*/revm-3.5.0/src/evm_impl.rs:787-788`
-```rust
-if is_precompile(inputs.contract, self.data.precompiles.len()) {
-    self.call_precompile(inputs, prepared_call.gas)
-}
-```
-
-**Implementation**:
-```rust
-// In TraceInspector
-pub precompile_calls: Vec<PrecompileCall>,
-
-struct PrecompileCall {
-    address: Address,
-    input: Vec<u8>,
-    output: Vec<u8>,
-    gas_used: u64,
-}
-```
-
-**Verify**: Add test that executes contract calling ECRecover/SHA256, verify precompile input/output captured
-
-### 1.2 Add Precompile Constraints
-
-**File**: `src/air/constraints.rs`
-
-**What**: Add constraint that verifies precompile output matches expected result
-
-**Implementation**:
-- For each precompile call, add constraint that verifies output is correct
-- Can use lookup table approach (precompute expected outputs for test vectors)
-- Or use Fiat-Shamir to bind precompile output to witness
-
-**Verify**: Test with known ECRecover input (e.g., recover address from signature)
-
-### 1.3 Add Precompile Gas Verification
-
-**What**: Verify gas deducted for precompile matches EIP spec
-
-**Reference**: `revm-precompile-2.2.0/src/lib.rs` - precompile gas schedules
-
-**Verify**: Ensure gas_used in trace matches expected for each precompile type
+See [CONSTRAINT_MODES.md](./CONSTRAINT_MODES.md) for detailed security analysis.
 
 ---
 
-## Phase 2: Memory Bounds Fix (3-4 hours)
+## Architecture
 
-### 2.1 Fix MLOAD/MSTORE Byte Width
-
-**File**: `src/evm/opcodes.rs:416-451`
-
-**Problem**: MLOAD reads 4 bytes instead of 32 bytes
-
-**Fix**:
-```rust
-pub fn mload(&self, offset: usize) -> u32 {
-    // EVM spec: reads 32 bytes, returns the value
-    if offset + 32 > self.memory.len() {
-        0  // Read beyond bounds = 0 after expansion
-    } else {
-        // Read full 32 bytes, take first limb mod q
-        let mut val = 0u32;
-        for i in 0..32 {
-            val ^= (self.memory[offset + i] as u32) << (8 * i);
-        }
-        val % 8383489
-    }
-}
-```
-
-**Same fix needed for MSTORE** - writes all 32 bytes
-
-**Verify**: Run bytecode with MLOAD/MSTORE, compare against revm output
-
-### 2.2 Add Memory Expansion Gas Constraint
-
-**File**: `src/air/constraints.rs`
-
-**What**: Verify memory expansion gas is correctly calculated per EIP-2565
-
-**Formula** (per EIP-2565):
-```
-memory_gas = MEMORY * q + (q * q) / 512
-where q = (new_memory_size - old_memory_size) / 32
-```
-
-**Reference**: `~/.cargo/registry/src/*/revm-3.5.0/src/interpreter/gas/fn.memory_gas.html`
-
-**Verify**: Compare gas_used from revm with computed memory expansion gas
-
-### 2.3 Add Memory State Commitment
-
-**File**: `src/evm/mod.rs` + `src/air/constraints.rs`
-
-**What**: Add Poseidon2 hash commitment for memory state
-
-**Reference**: Current `memory_commitment` exists but may not be verified
-
-**Verify**: Ensure memory root changes match actual memory writes
-
----
-
-## Phase 3: Jump & Stack Verification (2-3 hours)
-
-### 3.1 Add Jump Dest Validity Constraint
-
-**File**: `src/air/constraints.rs`
-
-**What**: After JUMP/JUMPI, verify target is JUMPDEST
-
-**Implementation**:
-- Track valid jump destinations in bytecode
-- Add constraint: `is_jumpdest[target_pc] == 1` after JUMP
-
-**Reference**: `src/evm/opcodes.rs` - `jumpdest` function
-
-**Verify**: Test JUMP to valid JUMPDEST (should pass), JUMP to PUSH1 (should fail)
-
-### 3.2 Add Stack Underflow Detection
-
-**File**: `src/air/constraints.rs`
-
-**What**: Before opcodes that pop, verify stack has enough items
-
-**Reference**: `register_state_transition_constraints()` - stack height checks
-
-**Verify**: Test POP on empty stack should fail
-
-### 3.3 Add Stack Overflow Detection
-
-**File**: `src/air/constraints.rs`
-
-**What**: After opcodes that push, verify stack doesn't exceed 1024
-
-**Reference**: `src/evm/mod.rs:66` - `row.memory.len() <= 65536` is checked, need similar for stack
-
-**Verify**: Test PUSH1 repeated 1025 times should fail constraint
-
----
-
-## Phase 4: Gas & Call Depth (2-3 hours)
-
-### 4.1 Verify Call Depth Limit
-
-**File**: `src/air/constraints.rs`
-
-**What**: Add constraint that call_depth <= 1024
-
-**Reference**: EVM CALL_STACK_LIMIT constant
-
-**Verify**: Create nested call contract, verify at depth 1025 fails
-
-### 4.2 Verify Gas Refund Tracking
-
-**File**: `src/air/constraints.rs`
-
-**What**: Track gas refund from SSTORE and add as constraint
-
-**Reference**: `revm` gas refunded calculation
-
-**Verify**: Contract with SSTORE that refunds gas, verify refund tracked
-
-### 4.3 Add EIP-1559 Gas Verification
-
-**File**: `src/air/constraints.rs`
-
-**What**: Verify effective gas price calculation
-
-**Reference**: `src/evm/full_evm.rs` - transaction gas setup
-
-**Verify**: Transaction with priority fee, verify gas price constraint
-
----
-
-## Phase 5: Integration & Testing (2-3 hours)
-
-### 5.1 Full Block Integration Test
-
-**Command**:
-```bash
-ZKEVM_CONSTRAINT_MODE=full ./improved_unified_prover
-```
-
-**Verify**: All contracts in block pass constraints
-
-### 5.2 Precompile Block Integration Test
-
-**Command**:
-```bash
-# Test block with precompile calls
-ZKEVM_CONSTRAINT_MODE=full ./improved_unified_prover
-```
-
-**Verify**: ECRecover/SHA256 contracts succeed
-
-### 5.3 Performance Benchmark
-
-**Target**: Full mode < 12s (currently ~1s, using headroom for security)
-
-| Phase | Time Added | Cumulative |
-|-------|------------|------------|
-| Phase 1 (Precompile) | +200ms | ~1.2s |
-| Phase 2 (Memory) | +100ms | ~1.3s |
-| Phase 3 (Jump/Stack) | +50ms | ~1.35s |
-| Phase 4 (Gas/Depth) | +50ms | ~1.4s |
-| Phase 5 (Integration) | +100ms | ~1.5s |
-
-**Still well under 12s target**
-
----
-
-## Verification Checklist
-
-- [x] ECRecover contract verifies correctly
-- [x] SHA256 contract verifies correctly
-- [x] MLOAD reads 32 bytes not 4
-- [x] Memory expansion gas calculated correctly
-- [x] Jump to non-JUMPDEST fails
-- [x] POP on empty stack fails
-- [x] Stack overflow (>1024) fails
-- [x] Call depth limit enforced
-- [x] Gas refund tracked for SSTORE
-- [x] All tests pass: `cargo test --release`
-- [x] Performance < 12s for Full mode
-
----
-
-## Anti-Patterns to Avoid (Lessons Learned)
-
-These issues have been fixed but serve as reminders:
-
-1. **Don't assume MLOAD returns full 32 bytes** - was reading 4 bytes only
-2. **Don't skip memory expansion gas** - EIP-2565 formula required
-3. **Don't skip precompile gas verification** - precompiles have specific gas costs
-4. **Don't forget JUMPDEST validity** - JUMP to PUSH1 was invalid but passed
-5. **Don't assume stack has items** - underflow was a real vulnerability
-6. **Don't use timestamps for randomness** - use Fiat-Shamir transcript instead
-
----
-
-## Key File References
-
-| File | Purpose |
-|------|---------|
-| `src/evm/full_evm.rs` | revm Inspector integration |
-| `src/air/constraints.rs` | All AIR constraints |
-| `src/evm/opcodes.rs` | Opcode implementations |
-| `src/evm/mod.rs` | EVM state and trace |
-| `~/.cargo/registry/src/*/revm-3.5.0/src/evm_impl.rs` | revm precompile dispatch |
-| `~/.cargo/registry/src/*/revm-precompile-2.2.0/src/lib.rs` | Precompile gas schedules |
-
----
-
-## Success Metrics
-
-1. **Precompile coverage**: 9/9 standard precompiles supported
-2. **Memory safety**: All memory accesses bounds-checked with proper gas
-3. **Jump integrity**: All jumps verified to land on JUMPDEST
-4. **Stack safety**: Underflow/overflow prevented
-5. **Performance**: Full mode < 12s (still 8x headroom)
-6. **Test coverage**: 100% of EVM execution paths exercised
-
----
-
-## Implementation Status (2026-05-01)
-
-### ✅ Phase 1: Precompile Support (COMPLETED)
-- [x] 1.1 Precompile tracking in Inspector (PrecompileCall struct added)
-- [x] 1.2 Precompile constraints in constraints.rs (verify_ecrecover, sha256, etc.)
-- [x] 1.3 Precompile gas verification (all 9 precompiles implemented)
-
-### ✅ Phase 2: Memory Bounds Fix (COMPLETED)
-- [x] 2.1 MLOAD/MSTORE fixed to read/write 32 bytes (was 4)
-- [x] 2.2 Memory expansion gas constraint (EIP-2565 formula implemented)
-- [x] 2.3 Memory state commitment (Poseidon2 hash in trace)
-
-### ✅ Phase 3: Jump & Stack Verification (COMPLETED)
-- [x] 3.1 JUMPDEST validity constraint (already existed, verified)
-- [x] 3.2 Stack underflow detection (verify_stack_underflow implemented)
-- [x] 3.3 Stack overflow detection (verify_stack_safety implemented)
-
-### ✅ Phase 4: Gas & Call Depth (COMPLETED)
-- [x] 4.1 Call depth limit constraint (verify_call_depth_limit implemented)
-- [x] 4.2 Gas refund tracking (verify_gas_refund implemented)
-- [x] 4.3 EIP-1559 gas verification (verify_eip1559_gas implemented)
-
-### ✅ Phase 5: Integration & Testing (COMPLETED)
-- [x] All verification functions implemented and tested
-- [x] Build passes with 70 tests passing
-
----
-
-## EVM Compatibility Gap Analysis
-
-| Opcode | Status | Notes |
-|--------|--------|-------|
-| **CREATE2** | ✅ Fixed | Now computes keccak256-based address |
-| **TLOAD/TSTORE** | ✅ Fixed | Proper transient storage implemented |
-| **MCOPY** | ✅ Fixed | Copies full length correctly |
-| **EXTCODEHASH** | ✅ | Fully implemented |
-| **CHAINID** | ✅ | Fully implemented |
-| **CREATE** | ✅ Fixed | Proper keccak256-based address calculation |
-| **CREATE2** | ✅ Fixed | keccak256-based address with code hash |
-| **BLOBHASH** | ✅ Fixed | EIP-4844 blob hash opcode implemented |
-| **BLOBBASEFEE** | ✅ Fixed | EIP-4844 blob fee opcode implemented |
-| **LOG0-4** | ✅ Fixed | Event emission with topics and data |
-| **SELFDESTRUCT** | ✅ Fixed | Gas refund tracking, EIP-6780 aware |
-| **MCOPY** | ✅ Fixed | Full memory copy implementation |
-| **TLOAD/TSTORE** | ✅ Fixed | Proper transient storage implementation |
-
-### Remaining Opcodes to Implement
-
-All critical EVM opcodes are now implemented. Minor items:
-| Priority | Opcode | Reason |
-|----------|--------|--------|
-| LOW | Event address tracking | Events use placeholder address |
-| LOW | Block context verification | Block fields use static values |
-
----
-
-## Intentional Design Decisions (Not Gaps)
-
-These items are by design:
-- **Custom Field (Q=8383489)** - Intentionally different from BN254 for lattice-native operations
-- **No Trusted Setup** - Ceremony-free; security relies on ML-PCS hardness
-- **Custom Proof System** - ML-PCS (Labrador) for lattice compatibility
-- **Custom Recursion** - SnarkEnhancedProver for aggregation
-
----
-
-## Formal Verification
-
-Formal verification for the Labrador SNARK implementation is documented in [Anemone's LABRADOR_FORMAL_VERIFICATION.md](../Anemone/docs/LABRADOR_FORMAL_VERIFICATION.md).
-
-Key items:
-- Transcript buffer overflow (CRITICAL)
-- Response bounds verification
-- Matrix expansion security
-- CRT reconstruction correctness
-
----
-
-## Performance Benchmarks (2026-05-01 updated)
-
-Fixed block #21500000 (76 contracts, same contracts across all modes):
-
-| Mode | Execution | Total | Target | Status |
-|------|-----------|-------|--------|--------|
-| StateDiff | 48ms | **181ms** | <12s | ✅ |
-| Minimal | 2572ms | 2580ms | <12s | ✅ |
-| Medium | 1456ms | 1465ms | <12s | ✅ |
-| Full | 1508ms | 1517ms | <12s | ✅ |
-
-**Key insight**: StateDiff uses revm directly (not custom EVM interpreter) and only extracts state changes, so it's fastest. Full mode includes comprehensive constraint checking but is still well under 12s target.
-
-### Per-Opcode Lattice Proving (2026-05-01)
-
-| Metric | Value |
-|--------|-------|
-| Per-opcode proving time | ~30ms per opcode |
-| Test trace | 4 rows |
-| Total proving time | 120ms |
-| NovaIVC folding | Working |
-| Labrador compatibility | ✅ (witness padding to 256) |
-
----
-
-## Lattice-Native zkEVM Architecture
-
-### Full Stack Diagram (Lattice Involvement Highlighted)
+### Full Stack Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                        Crystalline-EVM Full Stack                                      │
-├─────────────────────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────────────────┐    │
-│  │                           USER LAYER                                          │    │
-│  │                   Ethereum Block (transactions)                               │    │
-│  └─────────────────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                                │
-│                                      ▼                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────────────┐    │
-│  │                        EXECUTION LAYER  [CPU]                                  │    │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │    │
-│  │  │   EVM Exec   │  │   revm DIFF  │  │   Inspector  │  │  Trace Gen   │        │    │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘        │    │
-│  └─────────────────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                                │
-│                                      ▼                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────────────┐    │
-│  │                     CONSTRAINT LAYER  [CPU]                                    │    │
-│  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐          │    │
-│  │  │ AIR Constraints  │  │ State Transitions │  │   Memory/SHA      │          │    │
-│  │  └──────────────────┘  └──────────────────┘  └──────────────────┘          │    │
-│  └─────────────────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                                │
-│                                      ▼                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────────────┐    │
-│  │                   COMMITMENT LAYER  [CPU + ANE]  ★ LATTICE ★                   │    │
-│  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐          │    │
-│  │  │   Poseidon2     │  │  Bytecode Merkle  │  │   Trace Merkle    │          │    │
-│  │  │  ★ ANE-accel   │  │                  │  │                  │          │    │
-│  │  └──────────────────┘  └──────────────────┘  └──────────────────┘          │    │
-│  │  ┌──────────────────────────────────────────────────────────────────────────┐   │    │
-│  │  │  Witness Builder: trace_to_field_elements(), build_witness_for_row()   │   │    │
-│  │  │  Pads to LATTICEZK_L=256 for Labrador compatibility                     │   │    │
-│  │  └──────────────────────────────────────────────────────────────────────────┘   │    │
-│  └─────────────────────────────────────────────────────────────────────────────────┘    │
-│                                      │                                                │
-│                                      ▼                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────────────┐    │
-│  │                    PROVING LAYER  [CPU + ANE]  ★ LATTICE ★                     │    │
-│  │  ┌──────────────────────────────────┐  ┌──────────────────────────────────┐   │    │
-│  │  │       Labrador Prover             │  │      NovaIVC Folding              │   │    │
-│  │  │  • prove_witness() ★ ANE-accel  │  │  • prove_opcode_step()           │   │    │
-│  │  │  • LATTICEZK_L=256             │  │  • LCCCS accumulation            │   │    │
-│  │  └──────────────────────────────────┘  └──────────────────────────────────┘   │    │
-│  └─────────────────────────────────────────────────────────────────────────────────┘    │
-│                                                                                         │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
-★ LATTICE ★ = Components using lattice-based cryptography (Labrador/ML-PCS)
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Crystalline-EVM                                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                    USER LAYER                                    │   │
+│  │              Ethereum Block (transactions)                        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                           │
+│                              ▼                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                   EXECUTION LAYER  [CPU]                       │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐              │   │
+│  │  │   EVM Exec │  │  revm DIFF │  │  Inspector │              │   │
+│  │  └────────────┘  └────────────┘  └────────────┘              │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                           │
+│                              ▼                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                  CONSTRAINT LAYER  [CPU]                        │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │   │
+│  │  │ AIR Checks   │  │ State Transit │  │ Memory/SHA   │        │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                           │
+│                              ▼                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │            COMMITMENT LAYER  [CPU + ANE]  ★ LATTICE ★          │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐        │   │
+│  │  │  Poseidon2   │  │ Bytecode Merkle│  │ Trace Merkle │        │   │
+│  │  │  ★ ANE-acc  │  │              │  │              │        │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                           │
+│                              ▼                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │             PROVING LAYER  [CPU + ANE]  ★ LATTICE ★           │   │
+│  │  ┌─────────────────────────┐  ┌─────────────────────────┐        │   │
+│  │  │   Labrador Prover      │  │    NovaIVC Folding     │        │   │
+│  │  │ ★ ANE-accelerated    │  │  prove_opcode_step()   │        │   │
+│  │  └─────────────────────────┘  └─────────────────────────┘        │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+★ LATTICE ★ = Lattice-based cryptography (Labrador/ML-PCS)
 ```
 
 ### Where Lattices Are Used
 
-| Component | Location | Lattice Operation | Acceleration |
-|-----------|----------|-------------------|--------------|
-| **Poseidon2 Hash** | `crypto/poseidon2.rs` | Hash chain for commitments | ANE MatVec |
-| **Bytecode Merkle** | `evm/mod.rs` | Build/verify Merkle proofs | CPU |
-| **Witness Builder** | `air/polynomial_encoder.rs` | Trace → field elements | CPU |
-| **Labrador Prover** | `prover/mod.rs` | SNARK proof generation | ANE |
-| **NovaIVC Folding** | `prover/recursive_prove.rs` | LCCCS accumulation | CPU |
-
-### Per-Opcode Lattice Proving
-
-Crystalline-EVM now supports truly lattice-native per-opcode proving via NovaIVC folding:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Lattice-Native Per-Opcode Proving                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐                │
-│  │ Opcode 1│───▶│ Opcode 2│───▶│ Opcode N│                │
-│  │  LCCCS  │    │  LCCCS  │    │  LCCCS  │                │
-│  └────┬────┘    └────┬────┘    └────┬────┘                │
-│       │ Fold         │ Fold         │ Fold                 │
-│       ▼              ▼              ▼                      │
-│  ┌─────────────────────────────────────┐                    │
-│  │     Running LCCCS Accumulator      │                    │
-│  │   (proves all prior opcodes)       │                    │
-│  └─────────────────┬───────────────────┘                    │
-│                    ▼                                        │
-│           ┌───────────────┐                                 │
-│           │ Final Proof  │                                 │
-│           │ (constant-size)│                              │
-│           └───────────────┘                                │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Components
-
-| Component | File | Method | Purpose |
-|-----------|------|--------|---------|
-| Per-opcode witness | `polynomial_encoder.rs` | `TracePolynomial::from_single_row()` | Creates polynomial for single opcode |
-| Per-row commitment | `polynomial_encoder.rs` | `WitnessBuilder::build_witness_for_row()` | Commits single row witness |
-| Per-opcode proving | `recursive_prove.rs` | `NovaIVCProver::prove_opcode_step()` | Generates lattice proof per opcode |
-| Full per-opcode pipeline | `recursive_prove.rs` | `NovaIVCProver::prove_per_opcode()` | Constant-size proof via NovaIVC |
-
-### How It Works
-
-1. **Each opcode step** produces a witness from its TraceRow
-2. **`prove_opcode_step()`** generates a lattice proof for that single step
-3. **Nova folding** combines the proof into the running LCCCS accumulator
-4. **Final output** is a constant-size proof regardless of trace length
-
-### API Usage
-
-```rust
-// Per-opcode lattice-native proving
-let prover = NovaIVCProver::new(1);  // batch_size=1 for per-opcode
-let proof = prover.prove_per_opcode(&prover, &trace)?;
-
-// Or prove a single step (for incremental proving)
-let running = prover.prove_opcode_step(&prover, &row, running)?;
-```
-
-### Comparison with Traditional Batch Proving
-
-| Aspect | Batch Proving | Per-Opcode Proving |
-|--------|---------------|-------------------|
-| Witness | All rows flattened | Single row per proof |
-| Proof per step | One for entire batch | One per opcode |
-| Recursion | O(log N) composition | O(N) folding |
-| Final proof | Constant-size | Constant-size |
-| Constraint check | All constraints at once | Per-opcode constraints |
-
-### Performance: ~30ms per opcode
-
-| Metric | Value |
-|--------|-------|
-| Test trace | 4 rows |
-| Total proving time | 120ms |
-| Per-opcode | ~30ms |
+| Component | File | Lattice Operation |
+|-----------|------|-------------------|
+| Poseidon2 Hash | `crypto/poseidon2.rs` | Hash chain for commitments |
+| Bytecode Merkle | `evm/mod.rs` | Merkle proofs |
+| Witness Builder | `air/polynomial_encoder.rs` | Trace → field elements |
+| Labrador Prover | `prover/mod.rs` | SNARK proof generation |
+| NovaIVC Folding | `prover/recursive_prove.rs` | LCCCS accumulation |
 
 ---
 
-*Plan created: 2026-05-01*
-*Implementation completed: 2026-05-01*
-*Per-opcode proving: 2026-05-01*
+## Design Decisions
+
+### Why Lattice-Based?
+
+| Choice | Rationale |
+|--------|------------|
+| **No Trusted Setup** | Ceremony-free; security relies on ML-PCS hardness |
+| **Custom Field Q=8383489** | Dilithium-3 field for lattice-native operations |
+| **Labrador SNARK** | Lattice-based proof system compatible with ANE acceleration |
+| **NovaIVC Folding** | Per-opcode proofs with constant-size final proof |
+
+### Formal Verification
+
+Labrador SNARK formal verification is documented in [Anemone's LABRADOR_FORMAL_VERIFICATION.md](../Anemone/docs/LABRADOR_FORMAL_VERIFICATION.md).
+
+---
+
+## Performance
+
+Fixed block #21500000 (76 contracts):
+
+| Mode | Total | Target |
+|------|-------|--------|
+| StateDiff | 181ms | <12s |
+| Minimal | 2580ms | <12s |
+| Medium | 1465ms | <12s |
+| Full | 1517ms | <12s |
+
+**Per-opcode proving**: ~30ms per opcode with NovaIVC folding.
+
+---
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/evm/full_evm.rs` | revm Inspector integration |
+| `src/air/constraints.rs` | AIR constraints |
+| `src/evm/opcodes.rs` | Opcode implementations |
+| `src/evm/mod.rs` | EVM state and trace |
+| `prover/mod.rs` | Labrador prover |
+| `prover/recursive_prove.rs` | NovaIVC folding |
+
+---
+
+*Last updated: 2026-05-01*
