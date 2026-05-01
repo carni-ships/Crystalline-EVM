@@ -1,0 +1,8 @@
+cargo:rustc-link-lib=static=orion
+cargo:rustc-link-search=/Users/carnation/Documents/Claude/zkANE/Orion
+cargo:include=/Users/carnation/Documents/Claude/zkANE/Orion/core
+cargo:rustc-link-lib=framework=Foundation
+cargo:rustc-link-lib=framework=IOSurface
+cargo:rustc-link-lib=framework=Metal
+cargo:rustc-link-lib=framework=Accelerate
+cargo:rustc-link-lib=dylib=dl

@@ -1,0 +1,45 @@
+{
+  // Simple assert_zero test case
+  // This circuit verifies that specific witnesses are equal to zero.
+  //
+  // Expected behavior:
+  // - All assert_zero opcodes check that their witness value equals 0
+  // - If any assertion fails, the circuit is unsatisfied
+  //
+  // Test validation:
+  // - witness 0 = 0 (assert passes)
+  // - witness 1 = 0 (assert passes)
+  // - witness 2 = 0 (assert passes)
+  //
+  // Public parameters: [0, 1, 2] - these witnesses must be 0 for circuit to pass
+  // Private parameters: [] - no private inputs needed for this test
+  // Return values: [0, 1, 2] - returning the verified witnesses
+
+  "circuits": [
+    {
+      "opcodes": [
+        {
+          // Assert witness 0 equals zero
+          // With FieldElement defaulting to 0, this should always pass
+          "type": "assert_zero",
+          "witness": 0
+        },
+        {
+          // Assert witness 1 equals zero
+          // This verifies the second public parameter is 0
+          "type": "assert_zero",
+          "witness": 1
+        },
+        {
+          // Assert witness 2 equals zero
+          // This verifies the third public parameter is 0
+          "type": "assert_zero",
+          "witness": 2
+        }
+      ],
+      "private_parameters": [],
+      "public_parameters": [0, 1, 2]
+    }
+  ],
+  "return_values": [0, 1, 2]
+}

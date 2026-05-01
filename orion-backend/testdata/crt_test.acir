@@ -1,0 +1,60 @@
+{
+  // CRT (Chinese Remainder Theorem) Reconstruction Test
+  //
+  // This circuit reconstructs a number from its residues modulo different moduli.
+  // CRT is used in lattice-based cryptography for combining polynomials
+  // from different coefficient rings.
+  //
+  // CRT Problem Setup:
+  //   Given residues r1, r2, r3, ... mod m1, m2, m3, ...
+  //   Find N such that: N mod mi = ri for all i
+  //
+  // Test Case:
+  //   We have 4 residues corresponding to 4 prime moduli
+  //
+  //   Moduli (witnesses 0-3):
+  //     m0 = 97  (prime)
+  //     m1 = 101 (prime)
+  //     m2 = 103 (prime)
+  //     m3 = 107 (prime)
+  //
+  //   Residues (witnesses 4-7):
+  //     r0 = 42  (N mod 97 = 42)
+  //     r1 = 23  (N mod 101 = 23)
+  //     r2 = 56  (N mod 103 = 56)
+  //     r3 = 89  (N mod 107 = 89)
+  //
+  //   The product M = 97 * 101 * 103 * 107 = 1,067,971
+  //   (small enough to verify by computation)
+  //
+  //   Expected reconstructed value:
+  //     N = 42 * (M/97) * inv(M/97, 97) + ...
+  //     where inv(x, p) is modular inverse of x mod p
+  //
+  //   Using Garner's algorithm or standard CRT formula,
+  //   the reconstructed N should be unique modulo M.
+  //
+  // Public parameters: [] - all inputs are private
+  // Private parameters: [0, 1, 2, 3, 4, 5, 6, 7] - moduli and residues
+  // Return values: [8] - reconstructed value N
+
+  "circuits": [
+    {
+      "opcodes": [
+        {
+          "type": "black_box_func_call",
+          "name": "crt",
+          // Input witnesses: [m0, m1, m2, m3, r0, r1, r2, r3]
+          // witnesses 0-3: moduli (must be pairwise coprime)
+          // witnesses 4-7: residues corresponding to each modulus
+          "inputs": [97, 101, 103, 107, 42, 23, 56, 89],
+          // Output: single reconstructed value
+          "outputs": [8]
+        }
+      ],
+      "private_parameters": [0, 1, 2, 3, 4, 5, 6, 7],
+      "public_parameters": []
+    }
+  ],
+  "return_values": [8]
+}

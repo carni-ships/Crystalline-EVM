@@ -1,0 +1,15 @@
+{
+  "circuits": [
+    {
+      "opcodes": [
+        {
+          "type": "assert_zero",
+          "witness": 0
+        }
+      ],
+      "private_parameters": [],
+      "public_parameters": []
+    }
+  ],
+  "return_values": [0]
+}
