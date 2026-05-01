@@ -130,7 +130,23 @@ impl TracePolynomial {
         Ok(TracePolynomial { num_rows, num_vars, poly })
     }
 
-    /// Hash a trace row into a single field element
+    /// Create trace polynomial from a SINGLE trace row (per-opcode lattice proving)
+    ///
+    /// For per-opcode proving, each row needs its own polynomial.
+    /// We use num_vars=1 (2^1=2 points) where:
+    /// - f(0) = the actual row hash
+    /// - f(1) = 0 (padding)
+    pub fn from_single_row(row: &TraceRow) -> Result<Self, &'static str> {
+        let num_vars = 1;  // Single row needs only 1 variable
+        let num_rows = 1;
+
+        // f(0) = hash of the row, f(1) = 0
+        let hash = Self::hash_trace_row(row);
+        let evaluations = vec![hash, 0];
+
+        let poly = MultilinearPolynomial::new(num_vars, evaluations)?;
+        Ok(TracePolynomial { num_rows, num_vars, poly })
+    }
     fn hash_trace_row(row: &TraceRow) -> u32 {
         use crate::crypto::Poseidon2;
         // Simple fold: hash(pc, opcode, gas_before mod Q, gas_after mod Q, stack_height)
@@ -312,6 +328,16 @@ impl WitnessBuilder {
     /// Build witness polynomial from trace
     pub fn build_witness(&self, trace: &[TraceRow]) -> Result<(u32, crate::crypto::MerkleTree), &'static str> {
         let trace_poly = TracePolynomial::from_trace(trace)?;
+        let (root, tree) = self.pcs.commit(&trace_poly.poly);
+        Ok((root, tree))
+    }
+
+    /// Build witness from a SINGLE trace row (per-opcode lattice proving)
+    ///
+    /// This is the key to lattice-native zkEVM: each opcode execution
+    /// gets its own witness commitment.
+    pub fn build_witness_for_row(&self, row: &TraceRow) -> Result<(u32, crate::crypto::MerkleTree), &'static str> {
+        let trace_poly = TracePolynomial::from_single_row(row)?;
         let (root, tree) = self.pcs.commit(&trace_poly.poly);
         Ok((root, tree))
     }

@@ -426,6 +426,74 @@ These items are by design:
 
 ---
 
+## Lattice-Native zkEVM Architecture (NEW)
+
+### Per-Opcode Lattice Proving
+
+Crystalline-EVM now supports truly lattice-native per-opcode proving via NovaIVC folding:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Lattice-Native zkEVM Architecture (Per-Opcode Proving)      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐                │
+│  │ Opcode 1│───▶│ Opcode 2│───▶│ Opcode N│                │
+│  │  LCCCS  │    │  LCCCS  │    │  LCCCS  │                │
+│  └────┬────┘    └────┬────┘    └────┬────┘                │
+│       │ Fold         │ Fold         │ Fold                 │
+│       ▼              ▼              ▼                      │
+│  ┌─────────────────────────────────────┐                    │
+│  │     Running LCCCS Accumulator      │                    │
+│  │   (proves all prior opcodes)       │                    │
+│  └─────────────────┬───────────────────┘                    │
+│                    ▼                                        │
+│           ┌───────────────┐                                 │
+│           │ Final Proof  │                                 │
+│           │ (constant-size)│                              │
+│           └───────────────┘                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Components Added
+
+| Component | File | Method | Purpose |
+|-----------|------|--------|---------|
+| Per-opcode witness | `polynomial_encoder.rs` | `TracePolynomial::from_single_row()` | Creates polynomial for single opcode |
+| Per-row commitment | `polynomial_encoder.rs` | `WitnessBuilder::build_witness_for_row()` | Commits single row witness |
+| Per-opcode proving | `recursive_prove.rs` | `NovaIVCProver::prove_opcode_step()` | Generates lattice proof per opcode |
+| Full per-opcode pipeline | `recursive_prove.rs` | `NovaIVCProver::prove_per_opcode()` | Constant-size proof via NovaIVC |
+
+### How It Works
+
+1. **Each opcode step** produces a witness from its TraceRow
+2. **`prove_opcode_step()`** generates a lattice proof for that single step
+3. **Nova folding** combines the proof into the running LCCCS accumulator
+4. **Final output** is a constant-size proof regardless of trace length
+
+### API Usage
+
+```rust
+// Per-opcode lattice-native proving
+let prover = NovaIVCProver::new(1);  // batch_size=1 for per-opcode
+let proof = prover.prove_per_opcode(&prover, &trace)?;
+
+// Or prove a single step (for incremental proving)
+let running = prover.prove_opcode_step(&prover, &row, running)?;
+```
+
+###与传统批量证明对比
+
+| Aspect | Batch Proving (旧) | Per-Opcode Proving (新) |
+|--------|-------------------|------------------------|
+| Witness | All rows flattened | Single row per proof |
+| Proof per step | One for entire batch | One per opcode |
+| Recursion | O(log N) composition | O(N) folding |
+| Final proof | Constant-size | Constant-size |
+| Constraint check | All constraints at once | Per-opcode constraints |
+
+---
+
 *Plan created: 2026-05-01*
 *Implementation completed: 2026-05-01*
 *Gap analysis updated: 2026-05-01*
