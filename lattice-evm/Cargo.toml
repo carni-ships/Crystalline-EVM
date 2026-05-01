@@ -2,8 +2,8 @@
 name = "lattice-evm"
 version = "0.1.0"
 edition = "2021"
-description = "Lattice-based zkEVM using Orion ANE primitives"
-authors = ["Orion Team"]
+description = "Lattice-native zkEVM using ANE-accelerated proving"
+authors = ["Crystalline Team"]
 
 [dependencies]
 orion-backend = { path = "../orion-backend" }
