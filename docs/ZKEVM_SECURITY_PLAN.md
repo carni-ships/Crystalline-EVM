@@ -391,14 +391,16 @@ These items are by design:
 
 ## Performance Benchmarks (2026-05-01 updated)
 
+Fixed block #21500000 (76 contracts, same contracts across all modes):
+
 | Mode | Execution | Total | Target | Status |
 |------|-----------|-------|--------|--------|
-| StateDiff | 25ms | **0.14s** | <12s | ✅ |
-| Minimal | ~6s | ~6.1s | <12s | ✅ |
-| Medium | ~4.3s | ~4.5s | <12s | ✅ |
-| Full | ~1.5s | ~1.6s | <12s | ✅ |
+| StateDiff | 48ms | **181ms** | <12s | ✅ |
+| Minimal | 2572ms | 2580ms | <12s | ✅ |
+| Medium | 1456ms | 1465ms | <12s | ✅ |
+| Full | 1508ms | 1517ms | <12s | ✅ |
 
-**Note**: Full mode now includes per-opcode lattice proving with NovaIVC folding. Proving is ~118ms for 8 batches, with execution at ~1.5s. The ~17s extrapolation in benchmark is for ALL contracts in a block; per-contract proving is actually ~15ms. All modes now under 12s target.
+**Key insight**: StateDiff uses revm directly (not custom EVM interpreter) and only extracts state changes, so it's fastest. Full mode includes comprehensive constraint checking but is still well under 12s target.
 
 ### Per-Opcode Lattice Proving (2026-05-01)
 
