@@ -44,7 +44,9 @@ A zero-knowledge Ethereum Virtual Machine that generates proofs using lattice-ba
 - **Per-Opcode Proofs**: NovaIVC folding produces constant-size proofs regardless of trace length
 - **ANE Acceleration**: Apple Neural Engine accelerates Poseidon2 hashing and MatVec operations
 - **No Trusted Setup**: Ceremony-free proving using ML-PCS hardness assumptions
-- **EVM Compatible**: Supports ~80 EVM opcodes with full constraint checking
+- **EVM Compatible**: ~80 opcodes, simplified precompiles, BERLIN transactions
+
+**Status**: Research/protyping. See [docs/ZKEVM_SECURITY_PLAN.md](docs/ZKEVM_SECURITY_PLAN.md) for known gaps vs production zkEVMs.
 
 ---
 
