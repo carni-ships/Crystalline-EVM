@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-01
 **Goal**: Achieve production-grade zkEVM security comparable to Polygon zkEVM / zkSync Era
-**Performance Budget**: 12s max for Full mode (currently at ~1s - significant headroom)
+**Performance Budget**: 12s max for Full mode (currently at ~1.5s - significant headroom)
 
 ---
 
@@ -263,27 +263,30 @@ ZKEVM_CONSTRAINT_MODE=full ./improved_unified_prover
 
 ## Verification Checklist
 
-- [ ] ECRecover contract verifies correctly
-- [ ] SHA256 contract verifies correctly
-- [ ] MLOAD reads 32 bytes not 4
-- [ ] Memory expansion gas calculated correctly
-- [ ] Jump to non-JUMPDEST fails
-- [ ] POP on empty stack fails
-- [ ] Stack overflow (>1024) fails
-- [ ] Call depth limit enforced
-- [ ] Gas refund tracked for SSTORE
-- [ ] All tests pass: `cargo test --release`
-- [ ] Performance < 12s for Full mode
+- [x] ECRecover contract verifies correctly
+- [x] SHA256 contract verifies correctly
+- [x] MLOAD reads 32 bytes not 4
+- [x] Memory expansion gas calculated correctly
+- [x] Jump to non-JUMPDEST fails
+- [x] POP on empty stack fails
+- [x] Stack overflow (>1024) fails
+- [x] Call depth limit enforced
+- [x] Gas refund tracked for SSTORE
+- [x] All tests pass: `cargo test --release`
+- [x] Performance < 12s for Full mode
 
 ---
 
-## Anti-Patterns to Avoid
+## Anti-Patterns to Avoid (Lessons Learned)
 
-1. **Don't assume MLOAD returns full 32 bytes** - fix the 4-byte read bug first
-2. **Don't skip memory expansion gas** - EIP-2565 formula must be implemented
+These issues have been fixed but serve as reminders:
+
+1. **Don't assume MLOAD returns full 32 bytes** - was reading 4 bytes only
+2. **Don't skip memory expansion gas** - EIP-2565 formula required
 3. **Don't skip precompile gas verification** - precompiles have specific gas costs
-4. **Don't forget JUMPDEST validity** - JUMP to PUSH1 is invalid but currently passes
-5. **Don't assume stack has items** - underflow is a real vulnerability
+4. **Don't forget JUMPDEST validity** - JUMP to PUSH1 was invalid but passed
+5. **Don't assume stack has items** - underflow was a real vulnerability
+6. **Don't use timestamps for randomness** - use Fiat-Shamir transcript instead
 
 ---
 
@@ -377,15 +380,15 @@ These items are by design:
 
 ---
 
-## Formal Verification Roadmap
+## Formal Verification
 
-| Phase | Scope | Target Date |
-|-------|-------|-------------|
-| 1 | OpCode constraint correctness | Q2 2026 |
-| 2 | Memory model verification | Q2 2026 |
-| 3 | Stack arithmetic verification | Q3 2026 |
-| 4 | Control flow verification | Q3 2026 |
-| 5 | Cross-contract call verification | Q4 2026 |
+Formal verification for the Labrador SNARK implementation is documented in [Anemone's LABRADOR_FORMAL_VERIFICATION.md](../Anemone/docs/LABRADOR_FORMAL_VERIFICATION.md).
+
+Key items:
+- Transcript buffer overflow (CRITICAL)
+- Response bounds verification
+- Matrix expansion security
+- CRT reconstruction correctness
 
 ---
 
@@ -411,30 +414,6 @@ Fixed block #21500000 (76 contracts, same contracts across all modes):
 | Total proving time | 120ms |
 | NovaIVC folding | Working |
 | Labrador compatibility | ✅ (witness padding to 256) |
-
-### ✅ Phase 1: Precompile Support (COMPLETED)
-- [x] 1.1 Precompile tracking in Inspector (PrecompileCall struct added)
-- [x] 1.2 Precompile constraints in constraints.rs (verify_ecrecover, sha256, etc.)
-- [x] 1.3 Precompile gas verification (all 9 precompiles implemented)
-
-### ✅ Phase 2: Memory Bounds Fix (COMPLETED)
-- [x] 2.1 MLOAD/MSTORE fixed to read/write 32 bytes (was 4)
-- [x] 2.2 Memory expansion gas constraint (EIP-2565 formula implemented)
-- [x] 2.3 Memory state commitment (Poseidon2 hash in trace)
-
-### ✅ Phase 3: Jump & Stack Verification (COMPLETED)
-- [x] 3.1 JUMPDEST validity constraint (already existed, verified)
-- [x] 3.2 Stack underflow detection (verify_stack_underflow implemented)
-- [x] 3.3 Stack overflow detection (verify_stack_safety implemented)
-
-### ✅ Phase 4: Gas & Call Depth (COMPLETED)
-- [x] 4.1 Call depth limit constraint (verify_call_depth_limit implemented)
-- [x] 4.2 Gas refund tracking (verify_gas_refund implemented)
-- [x] 4.3 EIP-1559 gas verification (verify_eip1559_gas implemented)
-
-### ✅ Phase 5: Integration & Testing (COMPLETED)
-- [x] All verification functions implemented and tested
-- [x] Build passes with 70 tests passing
 
 ---
 
