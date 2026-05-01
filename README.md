@@ -101,12 +101,14 @@ let proof = prover.prove_evm_trace(&bytecode, gas_limit)?;
 
 ### Constraint Modes
 
-| Mode | Constraints | Speed | Use Case |
-|------|-------------|-------|----------|
-| **StateDiff** | Minimal | Fastest | State verification only |
-| **Minimal** | Basic | Fast | Simple contract calls |
-| **Medium** | +Memory | Medium | Standard DeFi |
-| **Full** | +Cross-row | Most thorough | Security-critical |
+| Mode | Constraints | Security | Speed | Use Case |
+|------|-------------|----------|-------|----------|
+| **StateDiff** | Minimal | Trust-based | Fastest | State verification only |
+| **Minimal** | Basic | ~80 bits | Fast | Simple contract calls |
+| **Medium** | +Memory | ~100 bits | Medium | Standard DeFi |
+| **Full** | +Cross-row | ~128 bits | Most thorough | Security-critical |
+
+For detailed security analysis, see [docs/CONSTRAINT_MODES.md](docs/CONSTRAINT_MODES.md).
 
 ### Proving Pipeline
 
