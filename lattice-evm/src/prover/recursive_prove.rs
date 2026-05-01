@@ -521,9 +521,17 @@ impl NovaIVCProver {
         // Compute next state z_{i+1} = F(z_i, witness)
         let z_next = self.step_fn.compute_next_state(running.u, &witness);
 
+        // Pad witness to LATTICEZK_L=256 for Labrador proving
+        // The witness is padded with zeros which doesn't affect integrity
+        // when combined with the Nova folding (we prove the computation was correct)
+        const LATTICEZK_L: usize = 256;
+        let mut witness_padded: Vec<f32> = witness.iter().map(|&v| v as f32).collect();
+        while witness_padded.len() < LATTICEZK_L {
+            witness_padded.push(0.0);
+        }
+
         // Generate lattice proof for this single opcode execution
-        let witness_f: Vec<f32> = witness.iter().map(|&v| v as f32).collect();
-        let proof = prover.prove_witness(&witness_f)
+        let proof = prover.prove_witness(&witness_padded)
             .map_err(|e| format!("Opcode proof failed: {:?}", e))?;
 
         // Create CCCS for this step
@@ -689,6 +697,7 @@ pub fn verify_nova_proof(proof: &NovaIVCProof) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prover::{Prover, ProverConfig};
 
     #[test]
     fn test_chunk_data() {
@@ -714,7 +723,7 @@ mod tests {
         // Test that per_opcode method exists and returns valid proof
         use crate::evm::OpCode;
 
-        let prover = NovaIVCProver::new(1);  // batch_size=1 for per-opcode
+        let nova_prover = NovaIVCProver::new(1);  // batch_size=1 for per-opcode
 
         // Create single-row trace
         let trace = vec![
@@ -755,6 +764,59 @@ mod tests {
         // Verify method exists (compile-time check)
         // Actual proving would require Prover instance which needs ANE
         // This test just verifies the API is correct
-        assert_eq!(prover.batch_size, 1);
+        assert_eq!(nova_prover.batch_size, 1);
+    }
+
+    #[test]
+    fn test_per_opcode_proving_with_real_prover() {
+        // Integration test that actually runs per-opcode proving with Labrador
+        use crate::evm::{execute_bytecode, OpCode};
+
+        let nova_prover = NovaIVCProver::new(1);
+
+        // Simple bytecode: PUSH1 10, PUSH1 20, ADD, STOP
+        let code = vec![0x60, 0x0A, 0x60, 0x14, 0x01, 0x00];
+        let gas_limit = 1_000_000;
+
+        let trace = match execute_bytecode(&code, gas_limit) {
+            Ok((_, t)) => t,
+            Err(_) => {
+                panic!("Failed to execute bytecode");
+            }
+        };
+
+        let trace_rows = trace.len();
+        assert!(trace_rows > 0, "Expected at least one trace row");
+
+        // Create prover
+        let prover = match Prover::new(ProverConfig::default()) {
+            Ok(p) => p,
+            Err(_) => {
+                // ANE not available, skip test
+                println!("Skipping test: ANE not available");
+                return;
+            }
+        };
+
+        // Initial state
+        let z_0 = nova_prover.step_fn.initial_state(&trace);
+        let mut running = LCCCS {
+            u: z_0,
+            comm_w: 0,
+            C: 0,
+            n: 0,
+        };
+
+        // Prove each opcode step individually
+        let start = std::time::Instant::now();
+        for row in &trace {
+            running = nova_prover.prove_opcode_step(&prover, row, running)
+                .expect("Per-opcode proving failed");
+        }
+        let prove_time = start.elapsed().as_millis() as f64;
+
+        assert_eq!(running.n, trace_rows, "Should have folded all trace rows");
+        println!("Per-opcode NovaIVC: {} rows in {:.2}ms ({:.3}ms per opcode)",
+            trace_rows, prove_time, prove_time / trace_rows as f64);
     }
 }
