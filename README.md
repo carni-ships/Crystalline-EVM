@@ -154,15 +154,9 @@ For detailed security analysis, see [docs/CONSTRAINT_MODES.md](docs/CONSTRAINT_M
 
 ## Related Projects
 
-- **[Anemone](https://github.com/carni-ships/Anemone)**: ANE acceleration primitives for lattice-based ZK (MatVec, Poseidon2, RNS). Crystalline-EVM uses Anemone for ANE-accelerated proving.
-- **labrador**: Lattice SNARK protocol (ML-PCS based)
-- **revm**: Rust Ethereum Virtual Machine implementation
-
-## Dependencies
-
-- **Anemone**: ANE runtime for Apple Neural Engine access
-- **revm**: Rust Ethereum Virtual Machine implementation
-- **labrador**: Lattice SNARK protocol (ML-PCS based)
+- **[Anemone](https://github.com/carni-ships/Anemone)**: ANE acceleration primitives for lattice-based ZK. Crystalline-EVM uses Anemone for MatVec and Poseidon2 operations.
+- **[Labrador](https://github.com/carni-ships/labrador)**: Lattice SNARK protocol (ML-PCS based) used for proof generation.
+- **[revm](https://github.com/bluealloy/revm)**: High-performance Ethereum Virtual Machine implementation in Rust.
 
 ---
 
