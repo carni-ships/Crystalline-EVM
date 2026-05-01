@@ -48,16 +48,34 @@ A zero-knowledge Ethereum Virtual Machine that generates proofs using lattice-ba
 
 ---
 
+## Why Lattice-Based zkEVM?
+
+Traditional zkEVMs rely on Groth16 or STARKs, both with significant tradeoffs:
+
+**Groth16**: Requires a trusted ceremony (toxic waste),circuit-specific setup, and is vulnerable to quantum attack.
+
+**STARKs**: No trusted setup, quantum-resistant, but proofs are massive (100+ KB) and verification is slow.
+
+**Lattice SNARKs** (Labrador) offer a third path:
+- **No ceremony**: No toxic waste, no trusted setup required
+- **Post-quantum**: Security based on lattice problems (SVP/CVP)
+- **Small proofs**: Constant-size proofs like Groth16, but without the setup
+- **Fast verification**: Field arithmetic, not elliptic curves
+
+Apple Silicon's **Neural Engine (ANE)** provides massive acceleration for the MatVec operations that dominate lattice proving. The ANE's 60+ GFLOPS at 1W enables proving on-device—imagine a future iPhone generating zkEVM proofs.
+
+---
+
 ## Performance
 
 Benchmarked on block #21,500,000 (76 contracts):
 
 | Mode | Execution | Total | Target | Status |
 |------|-----------|-------|--------|--------|
-| StateDiff | 48ms | 181ms | <12s | ✅ |
-| Minimal | 2572ms | 2580ms | <12s | ✅ |
-| Medium | 1456ms | 1465ms | <12s | ✅ |
-| Full | 1508ms | 1517ms | <12s | ✅ |
+| StateDiff | 48ms | 181ms | <12s | PASS |
+| Minimal | 2572ms | 2580ms | <12s | PASS |
+| Medium | 1456ms | 1465ms | <12s | PASS |
+| Full | 1508ms | 1517ms | <12s | PASS |
 
 **Per-opcode proving**: ~30ms per opcode with NovaIVC folding
 
@@ -134,9 +152,15 @@ For detailed security analysis, see [docs/CONSTRAINT_MODES.md](docs/CONSTRAINT_M
 
 ---
 
+## Related Projects
+
+- **[Anemone](https://github.com/carni-ships/Anemone)**: ANE acceleration primitives for lattice-based ZK (MatVec, Poseidon2, RNS). Crystalline-EVM uses Anemone for ANE-accelerated proving.
+- **labrador**: Lattice SNARK protocol (ML-PCS based)
+- **revm**: Rust Ethereum Virtual Machine implementation
+
 ## Dependencies
 
-- **orion-backend**: ANE runtime for Apple Neural Engine access
+- **Anemone**: ANE runtime for Apple Neural Engine access
 - **revm**: Rust Ethereum Virtual Machine implementation
 - **labrador**: Lattice SNARK protocol (ML-PCS based)
 
