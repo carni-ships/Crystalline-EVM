@@ -21,9 +21,8 @@
 
 use crate::crypto::{Poseidon2, Q};
 use crate::evm::TraceRow;
-use crate::prover::{Prover, ProverConfig};
+use crate::prover::Prover;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Maximum elements per Labrador witness (L=4)
 pub const BATCH_SIZE: usize = 4;

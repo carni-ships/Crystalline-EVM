@@ -2,7 +2,7 @@
 //!
 //! Supports only ETH transfer operations to demonstrate real transaction proving.
 
-use crate::{Q, TRACE_WIDTH};
+use crate::Q;
 use crate::crypto::keccak256_u32_words;
 use std::collections::HashMap;
 
@@ -571,7 +571,7 @@ impl EVMState {
 /// Execute ETH transfer
 pub fn execute_eth_transfer(
     from: u256,
-    to: u256,
+    _to: u256,
     value: u256,
 ) -> EVMState {
     // Simple ETH transfer bytecode:

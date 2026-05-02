@@ -8,9 +8,7 @@
 //! Smart block detection: polls for new blocks and processes them in real-time
 //! Block time is ~12 seconds on Ethereum, so we poll every 2 seconds to catch new blocks quickly
 
-use std::time::Instant;
-use std::cmp::min;
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use lattice_evm::evm::full_evm::execute_evm_with_trace;
@@ -29,7 +27,6 @@ impl ContinuousConfig {
         let mut start_block: u64 = 21_500_000;
         let mut poll_interval_ms: u64 = 2000; // Poll every 2 seconds by default (Ethereum block time is ~12s)
         let mut max_blocks: Option<u64> = None;
-        let mut set_explicitly = false;
 
         let mut i = 1;
         while i < args.len() {
@@ -53,7 +50,6 @@ impl ContinuousConfig {
                 _ => {
                     if let Ok(n) = args[i].parse::<u64>() {
                         start_block = n;
-                        set_explicitly = true;
                     }
                     i += 1;
                 }
@@ -65,82 +61,6 @@ impl ContinuousConfig {
             poll_interval_ms,
             max_blocks: max_blocks.or(Some(100)),
         }
-    }
-}
-
-/// Progress bar for terminal display
-struct ProgressBar {
-    total: usize,
-    current: Arc<AtomicUsize>,
-    width: usize,
-    start_time: Instant,
-}
-
-impl ProgressBar {
-    fn new(total: usize, width: usize) -> Self {
-        ProgressBar {
-            total,
-            current: Arc::new(AtomicUsize::new(0)),
-            width,
-            start_time: Instant::now(),
-        }
-    }
-
-    fn update(&self, current: usize) {
-        self.current.store(min(current, self.total), Ordering::SeqCst);
-    }
-
-    fn get_current(&self) -> usize {
-        self.current.load(Ordering::SeqCst)
-    }
-
-    fn draw(&self, message: &str) {
-        let current = self.get_current();
-        let elapsed = self.start_time.elapsed();
-        let elapsed_str = format_elapsed(elapsed);
-
-        if self.total == 0 {
-            let bar = "-".repeat(self.width);
-            println!("\r[{}] {} (took {})", bar, message, elapsed_str);
-            return;
-        }
-
-        let progress = current as f64 / self.total as f64;
-        let filled = (progress * self.width as f64) as usize;
-        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(self.width.saturating_sub(filled)));
-
-        let percent = (progress * 100.0) as u32;
-        print!(
-            "\r[{}] {} {:>3}% ({}/{}) (took {})",
-            bar, message, percent, current, self.total, elapsed_str
-        );
-        std::io::Write::flush(&mut std::io::stdout()).ok();
-    }
-
-    fn finish(&self, message: &str) {
-        let elapsed = self.start_time.elapsed();
-        let elapsed_str = format_elapsed(elapsed);
-        let bar = "█".repeat(self.width);
-        println!("\r[{}] {} (took {})", bar, message, elapsed_str);
-    }
-}
-
-fn format_elapsed(duration: std::time::Duration) -> String {
-    let ms = duration.as_millis() as u64;
-    if ms < 1000 {
-        format!("{}ms", ms)
-    } else {
-        let seconds = ms / 1000;
-        let ms_rem = ms % 1000;
-        format!("{}.{:>03}s", seconds, ms_rem)
-    }
-}
-
-fn short_addr(addr: &str) -> String {
-    if addr.len() > 10 {
-        format!("{}...", &addr[..10])
-    } else {
-        addr.to_string()
     }
 }
 
@@ -193,7 +113,7 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, u64)> 
         return Some((0, 0, 0, 0));
     }
 
-    use lattice_evm::evm::{EthClient, RPCConfig};
+    use lattice_evm::evm::EthClient;
     let client = EthClient::default();
     let mut contract_bytecodes: Vec<(String, Vec<u8>)> = Vec::new();
 
@@ -267,11 +187,8 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
     println!();
 
     let mut current_block = config.start_block;
-    let mut last_processed_block = Arc::new(AtomicU64::new(0));
+    let last_processed_block = Arc::new(AtomicU64::new(0));
     let mut total_blocks = 0u64;
-    let mut total_contracts = 0usize;
-    let mut total_traces = 0usize;
-    let mut total_failed = 0usize;
     let total_blocks_atomic = Arc::new(AtomicU64::new(0));
 
     // Shared state for showing block status
@@ -297,7 +214,7 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
                         std::io::Write::flush(&mut std::io::stdout()).ok();
 
                         match process_block(block_to_process).await {
-                            Some((contracts, traces, failed, gas)) => {
+                            Some((contracts, traces, _failed, gas)) => {
                                 if contracts > 0 {
                                     println!("\n✅ Block #{:>8} | {:>4} contracts | {:>5} traces | {} gas",
                                         block_to_process, contracts, traces, gas);
@@ -305,9 +222,6 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
                                     println!("\n⏭️  Block #{:>8} | empty (no contract calls)", block_to_process);
                                 }
 
-                                total_contracts += contracts;
-                                total_traces += traces;
-                                total_failed += failed;
                                 total_blocks += 1;
                                 total_blocks_atomic.fetch_add(1, Ordering::SeqCst);
                                 last_processed_block.store(block_to_process, Ordering::SeqCst);
@@ -324,7 +238,14 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
                             if total_blocks >= max {
                                 println!();
                                 println!("📊 Reached maximum blocks limit ({})", max);
-                                break;
+                                println!();
+                                println!("═══════════════════════════════════════════════════════════════════════");
+                                println!();
+                                println!("📊 REAL-TIME PROVING SUMMARY");
+                                println!();
+                                println!("   Last processed block: #{}", last_processed_block.load(Ordering::SeqCst));
+                                println!("   Blocks processed: {}", total_blocks);
+                                return;
                             }
                         }
                     }
@@ -343,23 +264,4 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
         // Wait before polling again
         thread::sleep(std::time::Duration::from_millis(config.poll_interval_ms));
     }
-
-    // Final summary
-    println!();
-    println!("═══════════════════════════════════════════════════════════════════════");
-    println!();
-    println!("📊 REAL-TIME PROVING SUMMARY");
-    println!();
-    println!("   Last processed block: #{}", last_processed_block.load(Ordering::SeqCst));
-    println!("   Blocks processed: {}", total_blocks);
-    println!("   Total contracts: {}", total_contracts);
-    println!("   Total traces: {}", total_traces);
-    println!("   Failed traces: {}", total_failed);
-    if total_blocks > 0 {
-        println!();
-        println!("   📈 Averages:");
-        println!("      • Contracts/block: {:.1}", total_contracts as f64 / total_blocks as f64);
-        println!("      • Traces/block: {:.1}", total_traces as f64 / total_blocks as f64);
-    }
-    println!();
 }

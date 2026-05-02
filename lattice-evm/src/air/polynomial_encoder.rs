@@ -10,7 +10,6 @@
 
 use crate::crypto::{MultilinearPolynomial, MultilinearPCS, Q};
 use crate::evm::TraceRow;
-use crate::evm::OpCode;
 
 /// Trace values extracted for SNARK proving
 /// These are the key values that appear in constraints
@@ -224,7 +223,7 @@ impl ConstraintPolynomial {
             evaluations.push(eval);
         }
 
-        let poly = MultilinearPolynomial::new(num_vars, evaluations.clone()).unwrap();
+        let _poly = MultilinearPolynomial::new(num_vars, evaluations.clone()).unwrap();
         ConstraintPolynomial {
             constraint_id: 1,
             evaluations,
@@ -356,7 +355,7 @@ impl WitnessBuilder {
         let trace_poly = TracePolynomial::from_trace(trace)?;
         let constraints = ConstraintsPolynomial::from_trace(trace)?;
 
-        let (root, tree) = self.pcs.commit(&trace_poly.poly);
+        let (_root, tree) = self.pcs.commit(&trace_poly.poly);
 
         // Evaluate constraints at challenge point
         let value = constraints.poly.evaluate(challenge);

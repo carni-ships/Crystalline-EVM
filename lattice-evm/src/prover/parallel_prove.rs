@@ -5,7 +5,7 @@
 //! - Generate leaf proofs concurrently across threads
 //! - Compose proofs sequentially using Poseidon2 Merkle tree
 
-use crate::crypto::{Poseidon2, Q};
+use crate::crypto::Poseidon2;
 use crate::prover::{Prover, ProverConfig};
 use std::thread;
 

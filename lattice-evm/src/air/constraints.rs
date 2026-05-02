@@ -2911,7 +2911,7 @@ pub fn verify_memory_expansion_gas(trace: &[TraceRow]) -> (usize, Vec<String>) {
             OpCode::MLOAD | OpCode::MSTORE | OpCode::MSTORE8 => {
                 // Base gas is 3, plus potential memory expansion
                 let base_gas = 3u64;
-                let min_expected = base_gas + expected_gas;
+                let _min_expected = base_gas + expected_gas;
 
                 // Allow some tolerance for other gas costs in the same row
                 if actual_gas_consumed < base_gas && expected_gas > 0 {
@@ -2994,7 +2994,7 @@ pub fn verify_stack_underflow(trace: &[TraceRow]) -> (usize, Vec<String>) {
     let mut violations = Vec::new();
 
     // Opcodes that pop from stack without pushing
-    let pop_opcodes = [
+    let _pop_opcodes = [
         OpCode::POP, OpCode::SWAP1, OpCode::SWAP2, OpCode::SWAP3, OpCode::SWAP4,
         OpCode::SWAP5, OpCode::SWAP6, OpCode::SWAP7, OpCode::SWAP8, OpCode::SWAP9,
         OpCode::SWAP10, OpCode::SWAP11, OpCode::SWAP12, OpCode::SWAP13, OpCode::SWAP14,

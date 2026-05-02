@@ -7,7 +7,7 @@
 //!
 //! Reference: "Doubly-Efficient zkSNARKs Without Trusted Setup" (Hyrax)
 
-use crate::crypto::{MultilinearPCS, SumcheckProof, OpeningProof, Q};
+use crate::crypto::MultilinearPCS;
 use serde::{Deserialize, Serialize};
 
 /// Verification result with details
@@ -121,7 +121,7 @@ impl CompactVerifier {
         sumcheck_claims: &[u32],
         sumcheck_commitments: &[u32],
         opening_value: u32,
-        challenge: &[u32],
+        _challenge: &[u32],
     ) -> (bool, Vec<u32>) {
         // For compact verification, we check:
         // 1. Sumcheck claims are consistent

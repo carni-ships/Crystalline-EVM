@@ -4,7 +4,6 @@
 //! Uses SNARKProof for proper constraint verification alongside Labrador proofs.
 
 use crate::air::polynomial_encoder::{TracePolynomial, ConstraintsPolynomial, WitnessBuilder};
-use crate::crypto::{MultilinearPCS, Q};
 use crate::evm::TraceRow;
 use crate::prover::snark_prover::{SNARKProof, SNARKProver, BatchSNARKProof};
 use crate::verifier::snark_verifier::{SNARKVerifier, VerificationResult};
@@ -74,7 +73,7 @@ impl SNARKTraceWitness {
         let all_rows: Vec<TraceRow> = traces.iter().flat_map(|t| t.clone()).collect();
 
         // Build trace polynomial
-        let trace_poly = TracePolynomial::from_trace(&all_rows)?;
+        let _trace_poly = TracePolynomial::from_trace(&all_rows)?;
 
         // Build constraints polynomial
         let constraints = ConstraintsPolynomial::from_trace(&all_rows)?;

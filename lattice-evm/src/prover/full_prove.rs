@@ -5,11 +5,10 @@
 //! - All AIR constraint evaluations per row
 //! - Poseidon2 commitment chain for Labrador witness (4 elements)
 
-use crate::air::{EVMAIREvaluator, trace_row_to_values, ConstraintType};
-use crate::crypto::{keccak256, keccak256_field, Poseidon2, Q};
+use crate::air::{EVMAIREvaluator, trace_row_to_values};
+use crate::crypto::{keccak256, Poseidon2, Q};
 use crate::evm::{TraceRow, EVMState};
-use crate::prover::{Prover, ProverConfig};
-use crate::air::LatticeAIR;
+use crate::prover::Prover;
 
 /// Full trace witness with all columns and constraints
 #[derive(Debug, Clone)]
@@ -93,7 +92,7 @@ pub fn build_full_witness(traces: &[Vec<TraceRow>]) -> FullTraceWitness {
 /// Compress full witness to 4-element Labrador witness using commitment chain
 pub fn compress_to_labrador_witness(witness: &FullTraceWitness) -> Vec<f32> {
     // Build Merkle tree of trace data commitments
-    let mut trace_commits: Vec<u32> = witness.trace_data.iter()
+    let trace_commits: Vec<u32> = witness.trace_data.iter()
         .map(|row| Poseidon2::hash_pair(row[0], row[1]))
         .collect();
 
@@ -131,7 +130,7 @@ pub fn compress_to_labrador_witness(witness: &FullTraceWitness) -> Vec<f32> {
 }
 
 /// Prove a single Ethereum transaction with full columns
-pub fn prove_single_tx(prover: &Prover, code: &[u8], gas: u64) -> Result<FullTraceWitness, String> {
+pub fn prove_single_tx(_prover: &Prover, code: &[u8], gas: u64) -> Result<FullTraceWitness, String> {
     // Execute bytecode
     let (_state, trace) = execute_and_trace(code, gas)
         .map_err(|e| e.to_string())?;
@@ -143,7 +142,7 @@ pub fn prove_single_tx(prover: &Prover, code: &[u8], gas: u64) -> Result<FullTra
 }
 
 /// Prove multiple transactions (full block) with full columns
-pub fn prove_block(prover: &Prover, codes: &[&[u8]], gas: u64) -> Result<FullTraceWitness, String> {
+pub fn prove_block(_prover: &Prover, codes: &[&[u8]], gas: u64) -> Result<FullTraceWitness, String> {
     let mut all_traces: Vec<Vec<TraceRow>> = Vec::new();
 
     for code in codes {

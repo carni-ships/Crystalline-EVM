@@ -207,7 +207,7 @@ pub enum OpCode {
 
 impl OpCode {
     /// Get gas cost for this opcode
-    pub fn gas_cost(&self, state: &EVMState) -> u64 {
+    pub fn gas_cost(&self, _state: &EVMState) -> u64 {
         match self {
             OpCode::STOP => 0,
             OpCode::ADD | OpCode::SUB => 3,
@@ -833,7 +833,7 @@ pub fn execute_bytecode_with_calldata(
             OpCode::CREATE => {
                 // Stack: value, offset, size -> address
                 // CREATE address = keccak256(sender_address ++ nonce)[12:]
-                let value = state.pop()?;
+                let _value = state.pop()?;
                 let offset = state.pop()?;
                 let size = state.pop()?;
 
@@ -875,7 +875,7 @@ pub fn execute_bytecode_with_calldata(
             OpCode::CREATE2 => {
                 // Stack: value, offset, size, salt -> address
                 // CREATE2 address = keccak256(0xff + sender + salt + keccak256(code))[12:]
-                let value = state.pop()?;
+                let _value = state.pop()?;
                 let offset = state.pop()?;
                 let size = state.pop()?;
                 let salt = state.pop()?;
@@ -927,7 +927,7 @@ pub fn execute_bytecode_with_calldata(
                 // EIP-3298: SELFDESTRUCT refunds 24000 gas if target != address
                 // Note: In newer EIPs (EIP-6780), SELFDESTRUCT doesn't always delete storage
                 // but we implement the original behavior for compatibility
-                let is_selfdestruct = state.balance > 0;
+                let _is_selfdestruct = state.balance > 0;
 
                 // Record selfdestruct operation in state
                 // This can be used by the prover to verify gas refunds
@@ -1453,7 +1453,7 @@ pub fn execute_bytecode_with_calldata(
             }
             OpCode::CODECOPY => {
                 let dest = state.pop()? as usize;
-                let offset = state.pop()? as usize;
+                let _offset = state.pop()? as usize;
                 let length = state.pop()? as usize;
                 // Copy from code (simulation - just zeros)
                 for i in 0..length.min(1024) {
@@ -1964,7 +1964,7 @@ impl TraceRow {
     /// Compute Merkle proof for a given bytecode position using cached tree
     /// Returns sibling hashes from leaf to root
     pub fn compute_merkle_proof(&self, pos: usize) -> Vec<u32> {
-        use crate::crypto::Poseidon2;
+        
         if self.bytecode.is_empty() || pos >= self.bytecode.len() {
             return vec![];
         }

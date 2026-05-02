@@ -259,7 +259,7 @@ impl SumcheckProof {
         transcript: &[u32],
     ) -> Self {
         let n = poly.num_vars;
-        let mut claims = vec![claimed_sum];
+        let claims = vec![claimed_sum];
         let mut commitments = Vec::new();
         let mut challenges = Vec::new();
         let mut final_evals = Vec::new();
@@ -275,7 +275,7 @@ impl SumcheckProof {
             let summed = current_poly.sum_over_first_var();
 
             // Sum of g_round over its domain should equal claims[round]
-            let g_sum: u64 = summed.evaluations.iter()
+            let _g_sum: u64 = summed.evaluations.iter()
                 .map(|&e| e as u64)
                 .sum::<u64>() % Q as u64;
 

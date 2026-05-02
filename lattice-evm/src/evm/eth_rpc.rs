@@ -6,7 +6,7 @@
 //! Key insight: tx.input is calldata, NOT bytecode!
 //! Contract bytecode must be fetched via eth_getCode.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::time::Duration;
 
 /// Ethereum RPC configuration with multiple endpoints for fallback

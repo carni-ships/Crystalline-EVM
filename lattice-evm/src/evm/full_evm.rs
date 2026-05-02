@@ -292,7 +292,7 @@ impl<DB: revm::Database> Inspector<DB> for TraceInspector {
 
     fn call_end(
         &mut self,
-        data: &mut revm::EVMData<'_, DB>,
+        _data: &mut revm::EVMData<'_, DB>,
         inputs: &CallInputs,
         remaining_gas: Gas,
         ret: InstructionResult,

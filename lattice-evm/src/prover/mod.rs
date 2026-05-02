@@ -14,7 +14,7 @@ pub use snark_prover::{SNARKProver, SNARKProof, BatchSNARKProof, verify_batch};
 pub use snark_enhanced_prover::{SNARKTraceWitness, CombinedProof, FullProvingResult, SNARKEnhancedProver};
 
 use crate::air::{LatticeAIR, trace_to_field_elements};
-use crate::crypto::{keccak256, keccak256_field, Poseidon2, Q};
+use crate::crypto::{keccak256_field, Poseidon2};
 use orion_backend::lattice_ops::LatticeOps;
 use orion_backend::labrador::LabradorProver;
 use orion_sys::LatticeZKProof;

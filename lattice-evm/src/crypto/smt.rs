@@ -148,7 +148,7 @@ impl SparseMerkleTree {
         let mut current_hash = proof.value_hash.unwrap_or(EMPTY_HASH);
         let mut slot = proof.slot;
 
-        for (level, &sibling_hash) in proof.proof_hashes.iter().enumerate() {
+        for (_level, &sibling_hash) in proof.proof_hashes.iter().enumerate() {
             current_hash = if slot & 1 == 0 {
                 Poseidon2::hash_pair(current_hash, sibling_hash)
             } else {

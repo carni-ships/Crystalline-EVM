@@ -72,7 +72,7 @@ impl SNARKProver {
             return Err("Empty trace");
         }
 
-        let num_vars = (trace.len() as f64).log2() as usize;
+        let _num_vars = (trace.len() as f64).log2() as usize;
 
         // Step 1: Build witness polynomial and commitment
         let (witness_commitment, witness_tree) = self.witness_builder.build_witness(trace)?;
