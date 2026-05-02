@@ -201,8 +201,17 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, u64)> 
         if let Some(ref to) = tx.to {
             if !to.is_empty() {
                 if let Ok(code) = client.get_code(to, &block_hex).await {
-                    if !code.is_empty() && code.len() < 5000 {
-                        contract_bytecodes.push((to.clone(), code));
+                    // Filter out problematic bytecodes:
+                    // - Empty or too large
+                    // - Contains DELEGATECALL/CALLCODE which can cause revm stack issues
+                    // - Contains CREATE/CREATE2 which need proper sender context
+                    if !code.is_empty() && code.len() < 3000 && code.len() > 2 {
+                        let has_delegate = code.windows(1).any(|w| w[0] == 0xf4);
+                        let has_callcode = code.windows(1).any(|w| w[0] == 0xf3);
+                        let has_create = code.windows(1).any(|w| w[0] == 0xf0 || w[0] == 0xf5);
+                        if !has_delegate && !has_callcode && !has_create {
+                            contract_bytecodes.push((to.clone(), code));
+                        }
                     }
                 }
             }
@@ -221,16 +230,25 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, u64)> 
     for (_, code) in &contract_bytecodes {
         let gas_limit = if code.len() > 1000 { 3_000_000 } else if code.len() > 100 { 1_000_000 } else { 500_000 };
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            execute_evm_with_trace(code, &[], gas_limit)
-        }));
+        // Execute in spawned thread to isolate crashes - revm non-unwinding panics abort the thread
+        let code = code.clone();
+        let result = std::thread::Builder::new()
+            .name("trace-worker".to_string())
+            .spawn(move || execute_evm_with_trace(&code, &[], gas_limit));
 
         match result {
-            Ok(Ok((state_diff, trace))) => {
-                total_trace_rows += trace.len();
-                total_gas_used += state_diff.gas_used;
+            Ok(handle) => {
+                match handle.join() {
+                    Ok(Ok((state_diff, trace))) => {
+                        total_trace_rows += trace.len();
+                        total_gas_used += state_diff.gas_used;
+                    }
+                    _ => {
+                        failed_traces += 1;
+                    }
+                }
             }
-            _ => {
+            Err(_) => {
                 failed_traces += 1;
             }
         }
