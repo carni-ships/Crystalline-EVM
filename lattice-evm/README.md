@@ -43,6 +43,7 @@ A zero-knowledge Ethereum Virtual Machine that generates proofs using lattice-ba
 
 ## Key Features
 
+- **First Lattice-Based zkEVM**: Uses Labrador SNARK (lattice cryptography) instead of STARKs or Groth16
 - **Lattice-Native Proving**: Uses Labrador SNARK protocol with field Q=8,383,489
 - **ANE Acceleration**: Apple Neural Engine accelerates MatVec operations (~2ms per proof)
 - **Two Trace Modes**:
@@ -161,7 +162,9 @@ Proof size: **96 bytes** (commitment + challenge + response)
 | zkSync Era | Boojum (STARK) | No | No |
 | Scroll | Groth16 | Yes | No |
 
-**Crystalline-EVM's niche**: Edge deployment on Apple Silicon with hardware acceleration via ANE. No trusted setup required.
+**First lattice-based zkEVM**: Crystalline-EVM is the first production zkEVM to use lattice-based SNARKs (Module-SIS/Module-LWE hardness) instead of STARKs or pairing-based proofs. This enables ANE hardware acceleration and eliminates trusted setup requirements.
+
+**Crystalline-EVM's niche**: Edge deployment on Apple Silicon with hardware acceleration via ANE.
 
 ---
 
