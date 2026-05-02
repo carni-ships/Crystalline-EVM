@@ -95,7 +95,7 @@ async fn main() {
 }
 
 /// Process a single block and return stats
-async fn process_block(block_number: u64) -> Option<(usize, usize, usize, u64)> {
+async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize, usize, u64)> {
     let block_hex = format!("0x{:x}", block_number);
     let block = match lattice_evm::evm::EthereumBlock::fetch(block_number).await {
         Ok(b) => b,
@@ -105,13 +105,21 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, u64)> 
         }
     };
 
-    // Analyze transactions
+    // Total transactions in this block
+    let total_txs = block.transactions.len();
+
+    // Analyze transactions - filter to contract calls (non-empty input)
     let contract_calls: Vec<_> = block.transactions.iter()
         .filter(|tx| !tx.input.is_empty() && tx.input != "0x")
         .collect();
 
+    // Count ETH transfers (empty input)
+    let eth_transfers = block.transactions.iter()
+        .filter(|tx| tx.input.is_empty() || tx.input == "0x")
+        .count();
+
     if contract_calls.is_empty() {
-        return Some((0, 0, 0, 0));
+        return Some((total_txs, eth_transfers, 0, 0, 0, 0));
     }
 
     use lattice_evm::evm::EthClient;
@@ -139,8 +147,10 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, u64)> 
         }
     }
 
+    let attempted = contract_bytecodes.len();
+
     if contract_bytecodes.is_empty() {
-        return Some((0, 0, 0, 0));
+        return Some((total_txs, eth_transfers, contract_calls.len(), 0, 0, 0));
     }
 
     // Generate traces
@@ -175,7 +185,8 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, u64)> 
         }
     }
 
-    Some((contract_bytecodes.len(), total_trace_rows, failed_traces, total_gas_used))
+    let successful = attempted - failed_traces;
+    Some((total_txs, eth_transfers, contract_calls.len(), attempted, successful, total_gas_used))
 }
 
 /// Continuous block proving loop
@@ -198,9 +209,7 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
 
     println!("📊 Starting from block #{} (will poll for newer blocks)\n", current_block);
 
-    const CLEAR_LINE: &str = "\x1b[2K";
-
-// Progress display helper - uses carriage return to overwrite same line
+    // Progress display helper - uses carriage return to overwrite same line
 fn show_status(line: &str) {
     eprint!("\r{}", line);
     std::io::stderr().flush().ok();
@@ -221,13 +230,18 @@ loop {
                         show_status(&format!("🔄 Processing block #{:>8} | new={:>8}", block_to_process, newest_block));
 
                         match process_block(block_to_process).await {
-                            Some((contracts, traces, _failed, gas)) => {
-                                if contracts > 0 {
-                                    println!();
-                                    println!("  ✅ #{:>8} | {} contracts | {} traces | {} gas",
-                                        block_to_process, contracts, traces, gas);
+                            Some((total_txs, eth_xfers, call_txs, attempted, successful, gas)) => {
+                                println!();
+                                if attempted > 0 {
+                                    println!("  ✅ #{:>8} | txs={} ({} calls, {} ETH xfers) | proved={}/{} | {} gas",
+                                        block_to_process, total_txs, call_txs, eth_xfers, successful, attempted, gas);
+                                } else if call_txs > 0 {
+                                    println!("  ⏭️  #{:>8} | txs={} ({} calls, {} ETH xfers) | 0 provable (filtered)",
+                                        block_to_process, total_txs, call_txs, eth_xfers);
+                                } else {
+                                    println!("  ⏭️  #{:>8} | txs={} (ETH transfers only)",
+                                        block_to_process, total_txs);
                                 }
-                                // else: skip empty blocks silently to keep display clean
 
                                 total_blocks += 1;
                                 total_blocks_atomic.fetch_add(1, Ordering::SeqCst);
