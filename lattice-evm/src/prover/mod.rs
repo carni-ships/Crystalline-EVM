@@ -106,6 +106,25 @@ impl Prover {
         })
     }
 
+    /// Create new prover from pre-generated keys (avoids expensive keygen)
+    ///
+    /// This allows sharing key material across threads without re-running keygen.
+    pub fn new_from_keys(
+        pk: orion_sys::LatticeZKProvingKey,
+        vk: LatticeZKVerificationKey,
+    ) -> Result<Self, orion_backend::BackendError> {
+        let lattice_ops = LatticeOps::new()?;
+        let labrador_prover = LabradorProver::new(pk);
+        let verifier = LabradorVerifier::new(vk);
+
+        Ok(Prover {
+            config: ProverConfig::default(),
+            lattice_ops,
+            prover: labrador_prover,
+            verifier,
+        })
+    }
+
     /// Generate proof for AIR execution trace
     pub fn prove(&self, air: &dyn LatticeAIR) -> Result<LatticeZKProof, orion_backend::BackendError> {
         // Generate trace

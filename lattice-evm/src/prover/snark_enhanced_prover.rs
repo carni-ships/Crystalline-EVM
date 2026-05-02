@@ -43,8 +43,8 @@ impl CombinedProof {
 /// SNARK-enhanced trace witness with metadata for SNARK proving
 #[derive(Debug, Clone)]
 pub struct SNARKTraceWitness {
-    /// Trace rows
-    pub traces: Vec<Vec<TraceRow>>,
+    /// Flattened trace rows (computed once, not cloned multiple times)
+    pub all_rows: Vec<TraceRow>,
     /// Witness commitment (Merkle root)
     pub witness_commitment: u32,
     /// Number of rows
@@ -56,7 +56,7 @@ pub struct SNARKTraceWitness {
 }
 
 impl SNARKTraceWitness {
-    /// Create from execution traces
+    /// Create from execution traces (single clone, not three)
     pub fn from_traces(traces: &[Vec<TraceRow>]) -> Result<Self, &'static str> {
         if traces.is_empty() {
             return Err("No traces");
@@ -69,7 +69,7 @@ impl SNARKTraceWitness {
 
         let num_vars = (total_rows as f64).log2() as usize;
 
-        // Flatten traces into a single vector of owned TraceRows
+        // Single clone: flatten traces into owned Vec<TraceRow>
         let all_rows: Vec<TraceRow> = traces.iter().flat_map(|t| t.clone()).collect();
 
         // Build trace polynomial
@@ -87,7 +87,7 @@ impl SNARKTraceWitness {
             .build_witness(&all_rows)?;
 
         Ok(SNARKTraceWitness {
-            traces: traces.to_vec(),
+            all_rows,
             witness_commitment,
             num_rows: total_rows,
             constraint_sum,
@@ -95,11 +95,10 @@ impl SNARKTraceWitness {
         })
     }
 
-    /// Generate SNARK proof for this witness
+    /// Generate SNARK proof for this witness (no cloning - uses stored all_rows)
     pub fn prove(&self) -> Result<SNARKProof, &'static str> {
         let prover = SNARKProver::new(self.num_vars);
-        let all_rows: Vec<TraceRow> = self.traces.iter().flat_map(|t| t.clone()).collect();
-        prover.prove(&all_rows)
+        prover.prove(&self.all_rows)
     }
 
     /// Verify SNARK proof
@@ -120,7 +119,7 @@ pub fn prove_block_snark(traces: &[Vec<Vec<TraceRow>>]) -> Result<BatchSNARKProo
     let mut proofs = Vec::new();
 
     for trace in traces {
-        let witness = SNARKTraceWitness::from_traces(&trace)?;
+        let witness = SNARKTraceWitness::from_traces(trace)?;
         let proof = witness.prove()?;
         proofs.push(proof);
     }
@@ -176,42 +175,30 @@ impl FullProvingResult {
 
 /// Integration with existing prover pipeline
 pub struct SNARKEnhancedProver {
-    /// SNARK prover
+    /// SNARK prover (reused across proofs)
     snark_prover: SNARKProver,
-    /// SNARK verifier
+    /// SNARK verifier (reused across proofs)
     snark_verifier: SNARKVerifier,
 }
 
 impl SNARKEnhancedProver {
-    pub fn new() -> Self {
-        let num_vars = 10; // Default for 1024 trace rows
+    pub fn new(num_vars: usize) -> Self {
         SNARKEnhancedProver {
             snark_prover: SNARKProver::new(num_vars),
             snark_verifier: SNARKVerifier::new(num_vars),
         }
     }
 
-    /// Prove traces with SNARK
-    pub fn prove_traces(&mut self, traces: &[Vec<TraceRow>]) -> Result<SNARKProof, &'static str> {
-        // Adjust num_vars based on trace size
-        let total_rows: usize = traces.iter().map(|t| t.len()).sum();
-        let num_vars = (total_rows as f64).log2().ceil() as usize;
-
-        // Create prover with correct size
-        let prover = SNARKProver::new(num_vars);
+    /// Prove traces with SNARK (reuses stored prover)
+    pub fn prove_traces(&self, traces: &[Vec<TraceRow>]) -> Result<SNARKProof, &'static str> {
+        // Flatten traces into all_rows (single clone)
         let all_rows: Vec<TraceRow> = traces.iter().flat_map(|t| t.clone()).collect();
-        prover.prove(&all_rows)
+        self.snark_prover.prove(&all_rows)
     }
 
     /// Verify SNARK proof
     pub fn verify_proof(&self, proof: &SNARKProof) -> VerificationResult {
         self.snark_verifier.verify(proof)
-    }
-}
-
-impl Default for SNARKEnhancedProver {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -299,7 +286,7 @@ mod tests {
 
         assert!(result.is_ok());
         let r = result.unwrap();
-        assert_eq!(r.proving_time_ms < 1000, true); // Should be fast
+        assert!(r.proving_time_ms < 1000); // Should be fast
     }
 
     #[test]

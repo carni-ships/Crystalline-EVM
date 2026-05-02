@@ -287,9 +287,13 @@ pub fn prove_full_trace_recursive(
         .collect();
 
     let num_elements = trace_data.len();
-    let elements_per_row = trace_rows.first()
-        .map(|r| r.to_commit_prove_field_elements().len())
-        .unwrap_or(0);
+    // Avoid calling to_commit_prove_field_elements() twice on first row
+    // Compute elements_per_row from data length divided by row count
+    let elements_per_row = if !trace_rows.is_empty() {
+        num_elements / trace_rows.len()
+    } else {
+        0
+    };
     println!("\n[RECURSIVE PROVING]");
     println!("  Trace rows: {}", trace_rows.len());
     println!("  Elements per row: {} (commit-and-prove with bytecode Merkle root)", elements_per_row);

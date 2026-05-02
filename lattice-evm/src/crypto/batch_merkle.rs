@@ -46,9 +46,11 @@ impl BatchMerkleTree {
     ///
     /// # Example
     /// ```
+    /// use lattice_evm::crypto::BatchMerkleTree;
     /// let leaves = vec![1u32, 2, 3, 4];
     /// let tree = BatchMerkleTree::build(&leaves);
     /// let root = tree.root();
+    /// assert!(root != 0);
     /// ```
     pub fn build(leaves: &[u32]) -> Self {
         if leaves.is_empty() {

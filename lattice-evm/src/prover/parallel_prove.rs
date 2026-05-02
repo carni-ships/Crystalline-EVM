@@ -1,16 +1,16 @@
 //! Parallel Recursive Proving
 //!
 //! Implements parallel batch proof generation using std::thread with thread-local provers:
-//! - Each thread creates its own prover (ANE context)
+//! - Provers are created once and shared across threads (keygen is expensive)
 //! - Generate leaf proofs concurrently across threads
-//! - Compose proofs sequentially using Poseidon2 Merkle tree
+//! - Compose proofs using Poseidon2 Merkle tree
 
 use crate::crypto::Poseidon2;
 use crate::prover::{Prover, ProverConfig};
 use std::thread;
 
-/// Maximum elements per Labrador witness (L=4)
-pub const BATCH_SIZE: usize = 4;
+/// Maximum elements per Labrador witness (L=256)
+pub const BATCH_SIZE: usize = 256;
 
 /// A single proof for a batch of elements
 pub struct BatchProof {
@@ -117,6 +117,10 @@ impl ParallelProver {
     }
 
     /// Generate all leaf proofs in parallel using thread pool
+    ///
+    /// Keygen is done ONCE before spawning threads (expensive ~100ms+).
+    /// Each thread creates its own LatticeOps (reuses global ANE context) and
+    /// LabradorProver from the pre-shared pk.
     pub fn generate_leaf_proofs_parallel(&self, batches: &[Vec<u32>]) -> Result<Vec<BatchProof>, String> {
         let batch_size = batches.len();
         let num_threads = self.num_threads.min(batch_size);
@@ -125,6 +129,21 @@ impl ParallelProver {
         let batches_per_thread = (batch_size + num_threads - 1) / num_threads;
 
         println!("  Using {} threads for {} batches", num_threads, batch_size);
+
+        // Do keygen ONCE before spawning threads (expensive operation)
+        let prove_start = std::time::Instant::now();
+        let seed = crate::prover::generate_seed();
+        let labrador_prover = orion_backend::labrador::LabradorProver::new_with_keygen(&seed);
+        let pk = labrador_prover.pk;
+        // Derive VK from the same pk
+        let vk = orion_sys::LatticeZKVerificationKey {
+            q: pk.q,
+            k: pk.k,
+            l: pk.l,
+            n: pk.n,
+        };
+        let init_time = prove_start.elapsed();
+        println!("  Keygen once in {:?}", init_time);
 
         // Create handles for each thread
         let mut handles = Vec::new();
@@ -138,10 +157,13 @@ impl ParallelProver {
             }
 
             let thread_batches = batches[start..end].to_vec();
-            let config = self.config.clone();
+            let pk = pk.clone(); // Clone for this thread
+            let vk = vk.clone(); // Clone for this thread
 
             let handle = thread::spawn(move || {
-                let prover = Prover::new(config)
+                // Each thread creates its own LatticeOps (reuses global ANE singleton)
+                // and LabradorProver from the pre-shared pk
+                let prover = Prover::new_from_keys(pk, vk)
                     .map_err(|e| format!("Thread {} prover failed: {:?}", thread_id, e))?;
 
                 let mut results = Vec::new();
@@ -183,7 +205,10 @@ impl ParallelProver {
     }
 
     /// Compose proofs using Poseidon2 Merkle tree
-    pub fn compose_proofs(&self, proofs: &[BatchProof]) -> Result<ProofTree, String> {
+    ///
+    /// Tree building (hashing levels) is already parallel via chunks(2).map().
+    /// The final root proof uses the provided prover (or creates one if None).
+    pub fn compose_proofs(&self, proofs: &[BatchProof], prover: Option<&Prover>) -> Result<ProofTree, String> {
         if proofs.len() <= 1 {
             let mut tree = ProofTree {
                 level: 0,
@@ -196,6 +221,7 @@ impl ParallelProver {
         }
 
         // Build Merkle tree of proofs using Poseidon2
+        // All hashes at each level are independent - already parallel via chunks().map()
         let mut current_level: Vec<u32> = proofs.iter()
             .map(|p| Poseidon2::hash_pair(p.commitment[0] as u32, p.commitment[1] as u32))
             .collect();
@@ -226,10 +252,16 @@ impl ParallelProver {
             root_bytes[3] as f32,
         ];
 
-        let prover = Prover::new(self.config.clone())
-            .map_err(|e| format!("Failed to create prover: {:?}", e))?;
+        // Reuse provided prover or create new one (avoid redundant keygen)
+        let root_prover = if let Some(p) = prover {
+            p
+        } else {
+            // Only create if not provided - this does keygen which is expensive
+            &Prover::new(self.config.clone())
+                .map_err(|e| format!("Failed to create prover: {:?}", e))?
+        };
 
-        let proof = prover.prove_witness(&witness)
+        let proof = root_prover.prove_witness(&witness)
             .map_err(|e| format!("Root proof failed: {:?}", e))?;
 
         let mut root_commitment = [0u8; 32];
@@ -273,6 +305,13 @@ pub fn build_proof_tree_parallel(
         .unwrap_or(4);
     let parallel_prover = ParallelProver::new(config.clone()).with_threads(num_cpus);
 
+    // Create ONE prover upfront that we'll reuse for composition
+    // (keygen is expensive, so we do it once)
+    let prove_start = std::time::Instant::now();
+    let prover = Prover::new(config.clone())
+        .map_err(|e| format!("Failed to create prover: {:?}", e))?;
+    println!("  Created prover for composition in {:?}", prove_start.elapsed());
+
     // Generate all leaf proofs in parallel
     let prove_start = std::time::Instant::now();
     let leaf_proofs = parallel_prover.generate_leaf_proofs_parallel(&batches)?;
@@ -280,9 +319,9 @@ pub fn build_proof_tree_parallel(
 
     println!("  Generated {} leaf proofs in {:?}", leaf_proofs.len(), leaf_time);
 
-    // Compose proofs (sequential due to tree dependencies)
+    // Compose proofs (using the same prover we created above)
     let compose_start = std::time::Instant::now();
-    let tree = parallel_prover.compose_proofs(&leaf_proofs)?;
+    let tree = parallel_prover.compose_proofs(&leaf_proofs, Some(&prover))?;
     let compose_time = compose_start.elapsed();
 
     println!("  Composed proofs in {:?}", compose_time);

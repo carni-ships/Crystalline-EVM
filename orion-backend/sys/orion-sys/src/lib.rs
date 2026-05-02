@@ -323,7 +323,7 @@ impl Default for LatticeZKTranscript {
 
 /// Proving key
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct LatticeZKProvingKey {
     pub seed: [uint8_t; 32],
     pub q: uint64_t,
@@ -334,7 +334,7 @@ pub struct LatticeZKProvingKey {
 
 /// Verification key
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct LatticeZKVerificationKey {
     pub q: uint64_t,
     pub k: c_int,
