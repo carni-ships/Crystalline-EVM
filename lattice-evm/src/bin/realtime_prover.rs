@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::io::Write; // For stderr flush
 use lattice_evm::evm::full_evm::execute_evm_with_trace;
 
 /// Continuous proving mode settings
@@ -197,7 +198,15 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
 
     println!("📊 Starting from block #{} (will poll for newer blocks)\n", current_block);
 
-    loop {
+    const CLEAR_LINE: &str = "\x1b[2K";
+
+// Progress display helper - uses carriage return to overwrite same line
+fn show_status(line: &str) {
+    eprint!("\r{}", line);
+    std::io::stderr().flush().ok();
+}
+
+loop {
         // Poll for current block number
         match lattice_evm::evm::get_current_block_number().await {
             Ok(newest_block) => {
@@ -209,25 +218,24 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
                         let block_to_process = current_block + 1;
                         status_processing.store(block_to_process, Ordering::SeqCst);
 
-                        print!("\r🔄 Polling... newest={:>8} processing={:>8}    ",
-                            newest_block, block_to_process);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                        show_status(&format!("🔄 Processing block #{:>8} | new={:>8}", block_to_process, newest_block));
 
                         match process_block(block_to_process).await {
                             Some((contracts, traces, _failed, gas)) => {
                                 if contracts > 0 {
-                                    println!("\n✅ Block #{:>8} | {:>4} contracts | {:>5} traces | {} gas",
+                                    println!();
+                                    println!("  ✅ #{:>8} | {} contracts | {} traces | {} gas",
                                         block_to_process, contracts, traces, gas);
-                                } else {
-                                    println!("\n⏭️  Block #{:>8} | empty (no contract calls)", block_to_process);
                                 }
+                                // else: skip empty blocks silently to keep display clean
 
                                 total_blocks += 1;
                                 total_blocks_atomic.fetch_add(1, Ordering::SeqCst);
                                 last_processed_block.store(block_to_process, Ordering::SeqCst);
                             }
                             None => {
-                                println!("\n⚠️  Block #{:>8} | FAILED", block_to_process);
+                                println!();
+                                println!("  ⚠️  Block #{:>8} | FAILED", block_to_process);
                             }
                         }
 
@@ -236,8 +244,6 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
                         // Check if we've reached max blocks
                         if let Some(max) = config.max_blocks {
                             if total_blocks >= max {
-                                println!();
-                                println!("📊 Reached maximum blocks limit ({})", max);
                                 println!();
                                 println!("═══════════════════════════════════════════════════════════════════════");
                                 println!();
@@ -250,14 +256,12 @@ async fn run_continuous_mode(config: &ContinuousConfig, initial_current: u64) {
                         }
                     }
                 } else {
-                    // No new blocks yet
-                    print!("\r🔄 Waiting for new blocks... last={:>8} current={:>8}", current_block, newest_block);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    // No new blocks yet - show compact waiting status on same line
+                    show_status(&format!("⏳ Waiting for blocks... last=#{} current=#{}    ", current_block, newest_block));
                 }
             }
             Err(e) => {
-                print!("\r⚠️  RPC error: {}                                                   ", e);
-                std::io::Write::flush(&mut std::io::stdout()).ok();
+                show_status(&format!("⚠️  RPC error: {}", e));
             }
         }
 
