@@ -21,6 +21,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 use lattice_evm::evm::full_evm::execute_evm_with_trace;
 use lattice_evm::prover::{Prover, ProverConfig};
+use lattice_evm::prover::parallel_prove::{ParallelProver, BatchProof};
 use lattice_evm::crypto::Poseidon2;
 use orion_backend::BackendError;
 
@@ -286,7 +287,7 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
     };
     let commit_elapsed = commit_start.elapsed();
 
-    // STEP 3: Prove (ANE proving)
+    // STEP 3: Prove (parallel ANE proving)
     let prove_start = Instant::now();
     let mut prove_proofs = 0usize;
     let mut prove_errors = 0usize;
@@ -296,6 +297,14 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
     if !all_elements.is_empty() {
         // Batch size for proving - Labrador L=256 (LATTICEZK_L)
         const WITNESS_SIZE: usize = 256;
+
+        // Create parallel prover with automatic thread detection
+        let num_cpus = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
+        let parallel_prover = ParallelProver::new(ProverConfig::default()).with_threads(num_cpus);
+
+        // Convert elements to batches (same format as parallel_prove::chunk_data)
         let batches: Vec<Vec<u32>> = all_elements.chunks(WITNESS_SIZE)
             .map(|chunk| {
                 let mut batch = chunk.to_vec();
@@ -308,45 +317,30 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
 
         let num_batches = batches.len();
 
-        // Initialize prover (sequential due to ANE context)
-        let config = ProverConfig::default();
-        match Prover::new(config) {
-            Ok(prover) => {
-                tracing::debug!("Prover initialized, generating {} batch proofs", num_batches);
-                // Sequential batch proving (Prover has non-Send ANE context)
-                for (batch_id, batch) in batches.iter().enumerate() {
-                    let witness: Vec<f32> = batch.iter().map(|&v| v as f32).collect();
-                    match prover.prove_witness(&witness) {
-                        Ok(proof) => {
-                            prove_proofs += 1;
-                            // Verify proof immediately after generation
-                            match prover.verify_proof(&proof) {
-                                Ok(true) => verify_success += 1,
-                                Ok(false) => verify_failures += 1,
-                                Err(_) => verify_failures += 1,
-                            }
-                            tracing::trace!("Batch {} proof generated", batch_id);
-                        }
-                        Err(e) => {
-                            prove_errors += 1;
-                            if prove_errors <= 3 || prove_errors % 1000 == 0 {
-                                let err_str = match &e {
-                                    BackendError::AneError(s) => format!("AneError: {}", s),
-                                    BackendError::InvalidWitness(s) => format!("InvalidWitness: {}", s),
-                                    _ => format!("{:?}", e),
-                                };
-                                eprintln!("Batch {} proof FAILED: {}, witness_len={}, bad_values={}",
-                                    batch_id, err_str, witness.len(),
-                                    witness.iter().filter(|&v| !v.is_finite()).count());
-                            }
-                        }
+        tracing::debug!("Starting parallel proving with {} threads for {} batches", num_cpus, num_batches);
+
+        // Use parallel prover (keygen done once, shared across threads)
+        match parallel_prover.generate_leaf_proofs_parallel(&batches) {
+            Ok(leaf_proofs) => {
+                prove_proofs = leaf_proofs.len();
+
+                // Verify each proof inline
+                let prover = Prover::new(ProverConfig::default())
+                    .expect("Prover for verification");
+                for batch_proof in &leaf_proofs {
+                    match prover.verify_proof(&batch_proof.proof) {
+                        Ok(true) => verify_success += 1,
+                        Ok(false) => verify_failures += 1,
+                        Err(_) => verify_failures += 1,
                     }
                 }
+
+                tracing::debug!("Parallel proving complete: {} proofs, {} verified",
+                    prove_proofs, verify_success);
             }
             Err(e) => {
-                tracing::warn!("Failed to initialize prover: {:?} - falling back to trace-only mode", e);
-                // In fallback mode, count batches as "virtual proofs" for reporting
-                prove_proofs = num_batches;
+                tracing::warn!("Parallel proving failed: {} - falling back to trace-only", e);
+                prove_errors = num_batches;
             }
         }
     }
