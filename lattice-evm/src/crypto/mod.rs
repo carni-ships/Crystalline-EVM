@@ -2,15 +2,19 @@
 //!
 //! Includes Keccak-256 for Ethereum transactions and Poseidon2 for Merkle commitments.
 
+pub mod blake3;
+pub mod batch_merkle;
 pub mod keccak;
 pub mod poseidon2;
 pub mod multilinear_pcs;
 pub mod smt;
 
-pub use keccak::{keccak256, keccak256_field, keccak256_u32_words};
+pub use blake3::{blake3, blake3_parent, blake3_batch_parents, blake3_node};
+pub use keccak::{keccak256, keccak256_field, keccak256_u32_words, keccak256_batch_parents, keccak256_node};
 pub use poseidon2::{Poseidon2, HASH_WIDTH, HASH_RATE};
 pub use multilinear_pcs::{MultilinearPolynomial, MultilinearPCS, MerkleTree, OpeningProof, SumcheckProof};
 pub use smt::{SparseMerkleTree, SMTProof};
+pub use batch_merkle::BatchMerkleTree;
 
 /// Field modulus for lattice-based operations
 pub const Q: u64 = 8383489;

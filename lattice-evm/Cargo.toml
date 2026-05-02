@@ -45,6 +45,10 @@ name = "comprehensive_benchmark"
 harness = false
 
 [[bin]]
+name = "mode_comparison"
+path = "benches/mode_comparison_benchmark.rs"
+
+[[bin]]
 name = "lattice-evm-prover"
 path = "src/bin/prover.rs"
 

@@ -43,13 +43,6 @@ fn time_trace_generation(code: &[u8], gas: u64) -> (Vec<RevmTraceRow>, Duration)
 /// Build bytecode Merkle tree and time it
 fn time_merkle_build(bytecode: &[u8]) -> (u32, Duration) {
     let start = Instant::now();
-    let row = RevmTraceRow {
-        pc: 0,
-        opcode: 0,
-        gas_before: 0,
-        gas_after: 0,
-        stack: vec![],
-    };
     // Compute bytecode Merkle root using Poseidon2
     let mut root = 0u32;
     for (i, &byte) in bytecode.iter().enumerate() {
@@ -101,6 +94,15 @@ fn time_witness_build(trace: &[RevmTraceRow], bytecode_merkle_root: u32) -> (Vec
     ];
 
     (witness, start.elapsed())
+}
+
+/// Execute bytecode and return trace with block context
+fn execute_code(code: &[u8], gas: u64) -> (Vec<RevmTraceRow>, BlockContext) {
+    let result = execute_evm_with_trace(code, &[], gas);
+    match result {
+        Ok((_state_diff, trace)) => (trace, BlockContext::default()),
+        Err(_) => (Vec::new(), BlockContext::default()),
+    }
 }
 
 fn main() {
@@ -158,19 +160,7 @@ fn main() {
             &witness[..witness.len().min(4)], time.as_millis() as f64);
     }
 
-    println!("\n=== 5. Block Context Captured ===\n");
-
-    if let Some(row) = trace1.first() {
-        println!("Block context from trace:");
-        println!("  coinbase: {:?}", row.block_context.coinbase);
-        println!("  timestamp: {}", row.block_context.timestamp);
-        println!("  number: {}", row.block_context.number);
-        println!("  prevrandao: {}", row.block_context.prevrandao);
-        println!("  gas_limit: {}", row.block_context.gas_limit);
-        println!("  chain_id: {}", row.block_context.chain_id);
-    }
-
-    println!("\n=== 6. Stack U256 Preservation ===\n");
+    println!("\n=== 5. Stack U256 Preservation ===\n");
 
     // Demonstrate that full U256 stack values are preserved
     for row in &trace4 {

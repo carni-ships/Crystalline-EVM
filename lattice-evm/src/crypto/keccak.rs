@@ -142,6 +142,30 @@ pub fn keccak256_u32_words(input: &[u8]) -> [u32; 8] {
     result
 }
 
+/// Batch Keccak-256 hash of parent nodes (pairs of 32-byte hashes)
+/// Input: n * 64 bytes (n pairs of 32-byte child hashes)
+/// Output: n * 32 bytes (n parent hashes)
+/// Inspired by zkMetal's Keccak256Engine::hashParents
+pub fn keccak256_batch_parents(input: &[u8]) -> Vec<u8> {
+    assert!(input.len() % 64 == 0, "Input must be multiple of 64 bytes");
+    let n = input.len() / 64;
+    let mut output = Vec::with_capacity(n * 32);
+
+    for i in 0..n {
+        let start = i * 64;
+        let hash = keccak256(&input[start..start + 64]);
+        output.extend_from_slice(&hash);
+    }
+
+    output
+}
+
+/// Keccak-256 hash of a single 32-byte node (for Merkle tree operations)
+pub fn keccak256_node(data: &[u8]) -> [u8; 32] {
+    assert!(data.len() == 32, "Node data must be 32 bytes");
+    keccak256(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +219,23 @@ mod tests {
         // Verify same input produces same output
         let hash2 = keccak256(message);
         assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_keccak256_batch_parents() {
+        // 2 pairs = 4 nodes = 128 bytes input
+        let input = [0u8; 128];
+        let output = keccak256_batch_parents(&input);
+        assert_eq!(output.len(), 64); // 2 parent hashes
+        tracing::info!("keccak256_batch_parents (4 zero nodes): {:02x?}", &output[..32]);
+    }
+
+    #[test]
+    fn test_keccak256_node() {
+        let data = [0x42u8; 32];
+        let hash = keccak256_node(&data);
+        assert_eq!(hash.len(), 32);
+        // Should match regular keccak256
+        assert_eq!(hash, keccak256(&data));
     }
 }

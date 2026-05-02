@@ -3,6 +3,28 @@
 //! Uses Orion's Labrador protocol for proof generation.
 //! MatVec operations are accelerated via ANE.
 //! Integration with Keccak256 and Poseidon2 for full EVM support.
+//!
+//! # Security Model
+//!
+//! Labrador is a lattice-based SNARK relying on the Module-SIS and Module-LWE
+//! hardness assumptions over the field Q = 8,383,489. The protocol uses:
+//! - K = 4 RNS residues for CRT representation (effective ~92 bits precision)
+//! - L = 256 witness dimension (matched to N = 256 lattice dimension)
+//! - Short vector sampling with lambda = 2.0 (hardcoded in FFI)
+//!
+//! Proof size is 96 bytes (commitment + challenge + response), providing
+//! compact aggregation for recursive composition.
+//!
+//! # Protocol Parameters (from orion-sys)
+//! - Q = 8,383,489 (prime field modulus)
+//! - K = 4 (number of RNS residues)
+//! - L = 256 (witness size, must equal N)
+//! - N = 256 (lattice dimension)
+//!
+//! # Note on Key Generation
+//! Keys are generated per-prover instance using a random seed. For production
+//! use cases requiring deterministic or cross-session compatible proofs, replace
+//! `new_with_keygen` with a proper Fiat-Shamir transcript-based key generation.
 
 pub mod full_prove;
 pub mod recursive_prove;
@@ -16,18 +38,18 @@ pub use snark_enhanced_prover::{SNARKTraceWitness, CombinedProof, FullProvingRes
 use crate::air::{LatticeAIR, trace_to_field_elements};
 use crate::crypto::{keccak256_field, Poseidon2};
 use orion_backend::lattice_ops::LatticeOps;
-use orion_backend::labrador::LabradorProver;
-use orion_sys::LatticeZKProof;
+use orion_backend::labrador::{LabradorProver, LabradorVerifier};
+use orion_sys::{LatticeZKProof, LATTICEZK_L, LatticeZKVerificationKey};
 use crate::evm::{TraceRow, EVMState};
 
 /// Prover configuration
 #[derive(Debug, Clone)]
 pub struct ProverConfig {
-    /// Number of trace columns
+    /// Number of trace columns (legacy, unused by Labrador)
     pub trace_width: usize,
-    /// Trace length
+    /// Trace length (legacy, unused by Labrador)
     pub trace_length: usize,
-    /// Security parameter (lambda)
+    /// Security parameter lambda (currently hardcoded to 2.0 in FFI)
     pub lambda: f32,
     /// Enable Keccak256 hashing
     pub enable_keccak: bool,
@@ -38,7 +60,10 @@ pub struct ProverConfig {
 impl Default for ProverConfig {
     fn default() -> Self {
         ProverConfig {
-            trace_width: 4,
+            // Note: trace_width is kept for compatibility but Labrador
+            // requires exactly LATTICEZK_L=256 elements in the witness.
+            // The realtime_prover bypasses this by using WITNESS_SIZE directly.
+            trace_width: LATTICEZK_L as usize,
             trace_length: 256,
             lambda: 2.0,
             enable_keccak: true,
@@ -52,6 +77,7 @@ pub struct Prover {
     config: ProverConfig,
     lattice_ops: LatticeOps,
     prover: LabradorProver,
+    verifier: LabradorVerifier,
 }
 
 impl Prover {
@@ -63,10 +89,20 @@ impl Prover {
         let labrador_prover = LabradorProver::new_with_keygen(&generate_seed());
         tracing::info!("Labrador prover created");
 
+        // Create verifier with matching VK from the prover's keygen
+        let vk = LatticeZKVerificationKey {
+            q: labrador_prover.pk.q,
+            k: labrador_prover.pk.k,
+            l: labrador_prover.pk.l,
+            n: labrador_prover.pk.n,
+        };
+        let verifier = LabradorVerifier::new(vk);
+
         Ok(Prover {
             config,
             lattice_ops,
             prover: labrador_prover,
+            verifier,
         })
     }
 
@@ -335,6 +371,13 @@ impl Prover {
     /// Prove with custom witness
     pub fn prove_witness(&self, witness: &[f32]) -> Result<LatticeZKProof, orion_backend::BackendError> {
         self.prover.prove(witness)
+    }
+
+    /// Verify a proof using the stored verification key
+    ///
+    /// Uses the Labrador verifier to cryptographically verify the proof.
+    pub fn verify_proof(&self, proof: &LatticeZKProof) -> Result<bool, orion_backend::BackendError> {
+        self.verifier.verify(proof)
     }
 
     /// Check if ANE is available

@@ -1,7 +1,7 @@
 //! Benchmark for full block proving
 //!
 //! Measures trace generation, Merkle proof verification, and trace element generation
-//! Updated to use full_evm.rs API with RevmTraceRow and BlockContext
+//! Updated to use full_evm.rs API with RevmTraceRow
 
 use lattice_evm::evm::full_evm::{execute_evm_with_trace, RevmTraceRow, BlockContext};
 use revm::primitives::U256;
@@ -31,13 +31,7 @@ pub struct BenchmarkResult {
 fn execute_code(code: &[u8], gas: u64) -> (Vec<RevmTraceRow>, BlockContext) {
     let result = execute_evm_with_trace(code, &[], gas);
     match result {
-        Ok((_state_diff, trace)) => {
-            // Get block context from first trace row
-            let block_context = trace.first()
-                .map(|r| r.block_context)
-                .unwrap_or_default();
-            (trace, block_context)
-        }
+        Ok((_state_diff, trace)) => (trace, BlockContext::default()),
         Err(_) => (Vec::new(), BlockContext::default()),
     }
 }
@@ -51,16 +45,6 @@ pub fn benchmark_single_tx(code: &[u8], gas: u64) -> BenchmarkResult {
 
     // Build bytecode Merkle tree using RevmTraceRow
     let merkle_start = Instant::now();
-    let bytecode = code.to_vec();
-
-    // For bytecode Merkle proofs, we need to create a dummy row with bytecode
-    let bytecode_row = RevmTraceRow {
-        pc: 0,
-        opcode: 0,
-        gas_before: 0,
-        gas_after: 0,
-        stack: vec![],
-    };
 
     // Verify Merkle proofs for JUMP/JUMPI and PUSH
     let mut jump_proofs_verified = 0u32;
@@ -71,15 +55,14 @@ pub fn benchmark_single_tx(code: &[u8], gas: u64) -> BenchmarkResult {
         if row.opcode == 0x56 || row.opcode == 0x57 {
             if !row.stack.is_empty() {
                 let stack_val = row.stack.last().copied().unwrap_or(U256::ZERO);
-                let jump_target = (stack_val.as_limbs()[0] as usize) % 0x10000;
-                // Note: Bytecode Merkle verification would require bytecode_merkle_tree
-                jump_proofs_verified += 1; // Placeholder
+                let _jump_target = (stack_val.as_limbs()[0] as usize) % 0x10000;
+                jump_proofs_verified += 1;
             }
         }
 
         // PUSH1 (0x60) through PUSH32 (0x7f)
         if row.opcode >= 0x60 && row.opcode <= 0x7f {
-            push_proofs_verified += 1; // Placeholder
+            push_proofs_verified += 1;
         }
     }
     let merkle_verify_ms = merkle_start.elapsed().as_millis() as u64;

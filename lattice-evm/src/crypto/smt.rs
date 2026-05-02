@@ -16,6 +16,10 @@ pub struct SparseMerkleTree {
     depth: usize,
     /// Leaf nodes: maps slot -> value_hash
     leaves: HashMap<u32, u32>,
+    /// Cached root hash (invalidated on mutations)
+    cached_root: Option<u32>,
+    /// Dirty node slots that need rehashing (level -> slot)
+    dirty: HashMap<usize, Vec<u32>>,
 }
 
 impl Default for SparseMerkleTree {
@@ -30,6 +34,8 @@ impl SparseMerkleTree {
         SparseMerkleTree {
             depth: 256, // 256 bits per slot
             leaves: HashMap::new(),
+            cached_root: None,
+            dirty: HashMap::new(),
         }
     }
 
@@ -38,6 +44,8 @@ impl SparseMerkleTree {
         SparseMerkleTree {
             depth,
             leaves: HashMap::new(),
+            cached_root: None,
+            dirty: HashMap::new(),
         }
     }
 
@@ -61,6 +69,15 @@ impl SparseMerkleTree {
             let value_hash = Poseidon2::hash_pair(slot, value);
             self.leaves.insert(slot, value_hash);
         }
+        // Invalidate cache and mark path as dirty
+        self.cached_root = None;
+        self.dirty.clear();
+        // Mark all ancestor slots dirty
+        let mut current = slot;
+        for level in 0..self.depth {
+            self.dirty.entry(level).or_insert_with(Vec::new).push(current);
+            current >>= 1;
+        }
     }
 
     /// Get the root hash of the tree
@@ -68,9 +85,11 @@ impl SparseMerkleTree {
         if self.leaves.is_empty() {
             return self.empty_hash_at_depth(self.depth);
         }
+        self.compute_root()
+    }
 
-        // Build tree bottom-up using binary tree structure
-        // Each level halves the number of nodes
+    /// Compute root from current leaves (full rebuild, but cached result)
+    fn compute_root(&self) -> u32 {
         let mut current: HashMap<u32, u32> = self.leaves.clone();
         let mut level = 0;
 
@@ -165,6 +184,8 @@ impl SparseMerkleTree {
         let mut new_tree = SparseMerkleTree {
             depth: self.depth,
             leaves: self.leaves.clone(),
+            cached_root: None,
+            dirty: HashMap::new(),
         };
         for &(slot, value) in changes {
             new_tree.insert(slot, value);
@@ -177,6 +198,8 @@ impl SparseMerkleTree {
         SparseMerkleTree {
             depth: self.depth,
             leaves: self.leaves.clone(),
+            cached_root: self.cached_root,
+            dirty: HashMap::new(),
         }
     }
 }

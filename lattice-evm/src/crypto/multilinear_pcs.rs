@@ -172,14 +172,22 @@ impl MerkleTree {
 
         // Build upward
         while current.len() > 1 {
-            let mut next = Vec::new();
-            for chunk in current.chunks(2) {
-                if chunk.len() == 2 {
-                    next.push(Poseidon2::hash_pair(chunk[0], chunk[1]));
-                } else {
-                    next.push(chunk[0]); // Odd element passes through
-                }
+            // Pre-calculate capacity: floor(n/2) pairs + potential odd element
+            let pair_count = current.len() / 2;
+            let next_len = if current.len() % 2 == 0 { pair_count } else { pair_count + 1 };
+            let mut next = Vec::with_capacity(next_len);
+
+            // Hash all pairs using index-based iteration
+            next.extend(
+                (0..pair_count)
+                    .map(|i| Poseidon2::hash_pair(current[i * 2], current[i * 2 + 1]))
+            );
+
+            // Odd element passes through unchanged
+            if current.len() % 2 == 1 {
+                next.push(current[current.len() - 1]);
             }
+
             levels.push(next.clone());
             current = next;
         }
