@@ -176,14 +176,19 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
             match execute_evm_with_trace(&code, &[], gas_limit) {
                 Ok((state_diff, trace)) => {
                     // Build commit-prove elements from trace
-                    // Each row: pc, opcode, gas_before, gas_after, stack_height
-                    let mut elements = Vec::with_capacity(trace.len() * 5);
+                    // Each row: pc, opcode, gas_before, gas_after, stack_height, top-4 stack values
+                    let mut elements = Vec::with_capacity(trace.len() * 9);
                     for row in &trace {
+                        // Basic trace info (5 elements)
                         elements.push(row.pc as u32 % 8383489);
                         elements.push(row.opcode as u32);
                         elements.push((row.gas_before % 8383489) as u32);
                         elements.push((row.gas_after % 8383489) as u32);
                         elements.push(row.stack.len() as u32 % 8383489);
+                        // Actual stack values - top 4 items mod Q (4 elements)
+                        for val in &row.stack {
+                            elements.push((val.as_limbs()[0] % 8383489) as u32);
+                        }
                     }
 
                     ContractTraceResult {

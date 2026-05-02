@@ -49,9 +49,6 @@ fn time_merkle_build(bytecode: &[u8]) -> (u32, Duration) {
         gas_before: 0,
         gas_after: 0,
         stack: vec![],
-        memory: vec![],
-        storage: vec![],
-        block_context: BlockContext::default(),
     };
     // Compute bytecode Merkle root using Poseidon2
     let mut root = 0u32;

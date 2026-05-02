@@ -60,9 +60,6 @@ pub fn benchmark_single_tx(code: &[u8], gas: u64) -> BenchmarkResult {
         gas_before: 0,
         gas_after: 0,
         stack: vec![],
-        memory: vec![],
-        storage: vec![],
-        block_context,
     };
 
     // Verify Merkle proofs for JUMP/JUMPI and PUSH

@@ -23,17 +23,15 @@ pub struct StateDiff {
 }
 
 /// Trace row data extracted from revm Inspector
+/// Optimized: actual stack values captured, no memory/storage per-row
 #[derive(Debug, Clone)]
 pub struct RevmTraceRow {
     pub pc: usize,
     pub opcode: u8,
     pub gas_before: u64,
     pub gas_after: u64,
+    /// Actual stack values (U256) - captures top N items for computation verification
     pub stack: Vec<U256>,
-    pub memory: Vec<u8>,
-    pub storage: Vec<(u32, u32)>,
-    /// Block context captured at time of execution
-    pub block_context: BlockContext,
 }
 
 /// Block context data for EVM execution
@@ -177,8 +175,8 @@ impl TraceInspector {
                 gas_before: row.gas_before,
                 gas_after: row.gas_after,
                 stack: row.stack_mod_q(),
-                memory: row.memory.clone(),
-                storage: row.storage.clone(),
+                memory: Vec::new(),  // Removed from RevmTraceRow
+                storage: Vec::new(), // Removed from RevmTraceRow
                 call_depth: self.current_call_depth,
                 bytecode: bytecode.to_vec(),
                 balance_before: 0,
@@ -211,14 +209,9 @@ impl<DB: revm::Database> Inspector<DB> for TraceInspector {
         let opcode = interp.current_opcode();
 
         // Get stack as Vec<U256> - preserve full precision for trace
+        // Limit to top 4 items to reduce element count while capturing computation
         let stack_data = interp.stack().data();
-        let stack = stack_data.to_vec();
-
-        // Get memory
-        let memory = interp.memory.data().to_vec();
-
-        // Capture block context from EVM data
-        let block_context = BlockContext::from_evm_env(&data.env);
+        let stack: Vec<U256> = stack_data.iter().take(4).copied().collect();
 
         // Track memory operations
         match opcode {
@@ -269,9 +262,6 @@ impl<DB: revm::Database> Inspector<DB> for TraceInspector {
             gas_before: self.gas_before_op,
             gas_after,
             stack,
-            memory,
-            storage: Vec::new(),
-            block_context,
         };
 
         self.trace.push(trace_row);
