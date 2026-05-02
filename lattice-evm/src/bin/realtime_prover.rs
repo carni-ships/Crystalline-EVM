@@ -11,7 +11,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::io::Write; // For stderr flush
+use std::io::Write;
+use std::panic;
 use lattice_evm::evm::full_evm::execute_evm_with_trace;
 
 /// Continuous proving mode settings
@@ -130,17 +131,10 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
         if let Some(ref to) = tx.to {
             if !to.is_empty() {
                 if let Ok(code) = client.get_code(to, &block_hex).await {
-                    // Filter out problematic bytecodes:
-                    // - Empty or too large
-                    // - Contains DELEGATECALL/CALLCODE which can cause revm stack issues
-                    // - Contains CREATE/CREATE2 which need proper sender context
-                    if !code.is_empty() && code.len() < 3000 && code.len() > 2 {
-                        let has_delegate = code.windows(1).any(|w| w[0] == 0xf4);
-                        let has_callcode = code.windows(1).any(|w| w[0] == 0xf3);
-                        let has_create = code.windows(1).any(|w| w[0] == 0xf0 || w[0] == 0xf5);
-                        if !has_delegate && !has_callcode && !has_create {
-                            contract_bytecodes.push((to.clone(), code));
-                        }
+                    // Accept all non-empty bytecodes (crashes are handled via thread isolation)
+                    // Limit size to 50KB to exclude obviously problematic bytecode
+                    if !code.is_empty() && code.len() <= 50000 && code.len() > 2 {
+                        contract_bytecodes.push((to.clone(), code));
                     }
                 }
             }
@@ -159,13 +153,18 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
     let mut failed_traces = 0;
 
     for (_, code) in &contract_bytecodes {
-        let gas_limit = if code.len() > 1000 { 3_000_000 } else if code.len() > 100 { 1_000_000 } else { 500_000 };
+        // Use conservative gas limit - too high can cause revm issues
+        let gas_limit = if code.len() > 2000 { 2_000_000 } else if code.len() > 500 { 1_000_000 } else { 500_000 };
 
         // Execute in spawned thread to isolate crashes - revm non-unwinding panics abort the thread
         let code = code.clone();
         let result = std::thread::Builder::new()
             .name("trace-worker".to_string())
-            .spawn(move || execute_evm_with_trace(&code, &[], gas_limit));
+            .spawn(move || {
+                // Set a panic hook that does nothing to avoid print pollution
+                panic::set_hook(Box::new(|_| {}));
+                execute_evm_with_trace(&code, &[], gas_limit)
+            });
 
         match result {
             Ok(handle) => {
