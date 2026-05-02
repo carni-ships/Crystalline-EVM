@@ -545,6 +545,12 @@ impl EVMState {
 }
 
 /// Execute bytecode and generate trace
+///
+/// # Deprecated
+///
+/// This function uses a custom EVM implementation with u32 mod Q truncation.
+/// For proper EVM semantics, use `full_evm::execute_evm_with_trace` instead,
+/// which uses revm and preserves full U256 stack values.
 pub fn execute_bytecode(
     code: &[u8],
     gas: u64,
@@ -553,6 +559,12 @@ pub fn execute_bytecode(
 }
 
 /// Execute bytecode with calldata and generate trace
+///
+/// # Deprecated
+///
+/// This function uses a custom EVM implementation with u32 mod Q truncation.
+/// For proper EVM semantics, use `full_evm::execute_evm_with_trace` instead,
+/// which uses revm and preserves full U256 stack values.
 pub fn execute_bytecode_with_calldata(
     code: &[u8],
     gas: u64,

@@ -11,7 +11,7 @@ pub mod full_evm;
 
 pub use opcodes::{OpCode, EVMState, TraceRow, execute_bytecode, execute_bytecode_with_calldata};
 pub use eth_rpc::{EthClient, EthereumBlock, EthereumTransaction, RPCConfig, hex_to_bytes, hex_to_u64, get_current_block_number};
-pub use full_evm::{full_evm_validate, full_evm_can_execute};
+pub use full_evm::{full_evm_validate, full_evm_can_execute, execute_evm_with_trace, execute_evm_with_diff};
 
 use crate::Q;
 

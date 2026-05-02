@@ -5,10 +5,12 @@
 pub mod keccak;
 pub mod poseidon2;
 pub mod multilinear_pcs;
+pub mod smt;
 
 pub use keccak::{keccak256, keccak256_field, keccak256_u32_words};
 pub use poseidon2::{Poseidon2, HASH_WIDTH, HASH_RATE};
 pub use multilinear_pcs::{MultilinearPolynomial, MultilinearPCS, MerkleTree, OpeningProof, SumcheckProof};
+pub use smt::{SparseMerkleTree, SMTProof};
 
 /// Field modulus for lattice-based operations
 pub const Q: u64 = 8383489;

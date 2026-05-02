@@ -29,9 +29,94 @@ pub struct RevmTraceRow {
     pub opcode: u8,
     pub gas_before: u64,
     pub gas_after: u64,
-    pub stack: Vec<u32>,
+    pub stack: Vec<U256>,
     pub memory: Vec<u8>,
     pub storage: Vec<(u32, u32)>,
+    /// Block context captured at time of execution
+    pub block_context: BlockContext,
+}
+
+/// Block context data for EVM execution
+#[derive(Debug, Clone, Copy)]
+pub struct BlockContext {
+    pub coinbase: Address,
+    pub timestamp: U256,
+    pub number: U256,
+    pub prevrandao: U256,
+    pub gas_limit: U256,
+    pub base_fee: U256,
+    pub chain_id: U256,
+}
+
+impl Default for BlockContext {
+    fn default() -> Self {
+        BlockContext {
+            coinbase: Address::ZERO,
+            timestamp: U256::ZERO,
+            number: U256::ZERO,
+            prevrandao: U256::ZERO,
+            gas_limit: U256::ZERO,
+            base_fee: U256::ZERO,
+            chain_id: U256::ONE,
+        }
+    }
+}
+
+impl BlockContext {
+    /// Create BlockContext from revm environment
+    pub fn from_evm_env(env: &revm::primitives::Env) -> Self {
+        // Convert prevrandao from Option<FixedBytes<32>> to U256
+        // FixedBytes is 32 bytes, we use first 8 bytes as u64 for simplicity
+        let prevrandao = if let Some(fb) = env.block.prevrandao {
+            let low_u64 = u64::from_le_bytes([
+                fb[0], fb[1], fb[2], fb[3],
+                fb[4], fb[5], fb[6], fb[7],
+            ]);
+            U256::from(low_u64)
+        } else {
+            U256::ZERO
+        };
+
+        // Convert chain_id from u64 to U256
+        let chain_id = U256::from(env.cfg.chain_id);
+
+        BlockContext {
+            coinbase: env.block.coinbase,
+            timestamp: env.block.timestamp,
+            number: env.block.number,
+            prevrandao,
+            gas_limit: env.block.gas_limit,
+            // Base_fee only exists in London+ specs, use 0 for BERLIN
+            base_fee: U256::ZERO,
+            chain_id,
+        }
+    }
+
+    /// Convert to field elements for constraint evaluation
+    pub fn to_field_elements(&self) -> Vec<u32> {
+        vec![
+            (self.coinbase.as_slice().first().copied().unwrap_or(0) as u32),
+            (self.timestamp.as_limbs()[0] % Q as u64) as u32,
+            (self.number.as_limbs()[0] % Q as u64) as u32,
+            (self.prevrandao.as_limbs()[0] % Q as u64) as u32,
+            (self.gas_limit.as_limbs()[0] % Q as u64) as u32,
+            (self.base_fee.as_limbs()[0] % Q as u64) as u32,
+            (self.chain_id.as_limbs()[0] % Q as u64) as u32,
+        ]
+    }
+}
+
+/// Field modulus for lattice-based proving
+const Q: u32 = 8383489;
+
+impl RevmTraceRow {
+    /// Convert stack values to field elements (mod Q)
+    /// This should only be called at the trace-to-witness boundary
+    pub fn stack_mod_q(&self) -> Vec<u32> {
+        self.stack.iter().map(|v| {
+            (v.as_limbs()[0] % Q as u64) as u32
+        }).collect()
+    }
 }
 
 /// Precompile call record for verification
@@ -81,6 +166,9 @@ impl TraceInspector {
     }
 
     /// Convert RevmTraceRow to our TraceRow format
+    /// Note: This converts stack U256 values to mod Q (u32) for compatibility
+    /// with the legacy TraceRow type. For lattice proving, use RevmTraceRow directly
+    /// with stack_mod_q() at the witness generation boundary.
     pub fn to_trace_rows(&self, bytecode: &[u8]) -> Vec<crate::evm::TraceRow> {
         self.trace.iter().map(|row| {
             crate::evm::TraceRow {
@@ -88,7 +176,7 @@ impl TraceInspector {
                 opcode: row.opcode,
                 gas_before: row.gas_before,
                 gas_after: row.gas_after,
-                stack: row.stack.clone(),
+                stack: row.stack_mod_q(),
                 memory: row.memory.clone(),
                 storage: row.storage.clone(),
                 call_depth: self.current_call_depth,
@@ -113,7 +201,7 @@ impl<DB: revm::Database> Inspector<DB> for TraceInspector {
     fn step_end(
         &mut self,
         interp: &mut Interpreter,
-        _data: &mut revm::EVMData<'_, DB>,
+        data: &mut revm::EVMData<'_, DB>,
         _eval: InstructionResult,
     ) -> InstructionResult {
         let gas_after = interp.gas.remaining();
@@ -122,37 +210,35 @@ impl<DB: revm::Database> Inspector<DB> for TraceInspector {
         // Get current opcode using the method on Interpreter
         let opcode = interp.current_opcode();
 
-        // Get stack as Vec<u32> (mod q)
+        // Get stack as Vec<U256> - preserve full precision for trace
         let stack_data = interp.stack().data();
-        let mut stack = Vec::with_capacity(stack_data.len());
-        for v in stack_data {
-            // Convert U256 to u32 via first limb
-            let val: u32 = (v.as_limbs()[0] % 8383489) as u32;
-            stack.push(val);
-        }
+        let stack = stack_data.to_vec();
 
         // Get memory
         let memory = interp.memory.data().to_vec();
+
+        // Capture block context from EVM data
+        let block_context = BlockContext::from_evm_env(&data.env);
 
         // Track memory operations
         match opcode {
             0x51 => { // MLOAD
                 if !stack.is_empty() {
-                    let offset = (stack[0] % 8383489) as u32;
+                    let offset = (stack[0].as_limbs()[0] % 8383489) as u32;
                     self.memory_ops.push((offset, 0u32));
                 }
             }
             0x52 => { // MSTORE
                 if stack.len() >= 2 {
-                    let offset = (stack[0] % 8383489) as u32;
-                    let value: u32 = stack[1];
+                    let offset = (stack[0].as_limbs()[0] % 8383489) as u32;
+                    let value = (stack[1].as_limbs()[0] % 8383489) as u32;
                     self.memory_ops.push((offset, value));
                 }
             }
             0x59 => { // MSTORE8
                 if stack.len() >= 2 {
-                    let offset = (stack[0] % 8383489) as u32;
-                    let value = (stack[1] % 256) as u32;
+                    let offset = (stack[0].as_limbs()[0] % 8383489) as u32;
+                    let value = (stack[1].as_limbs()[0] % 256) as u32;
                     self.memory_ops.push((offset, value));
                 }
             }
@@ -163,14 +249,14 @@ impl<DB: revm::Database> Inspector<DB> for TraceInspector {
         match opcode {
             0x54 => { // SLOAD
                 if !stack.is_empty() {
-                    let key: u32 = stack[0];
+                    let key: u32 = (stack[0].as_limbs()[0] % 8383489) as u32;
                     self.storage_ops.push((key, 0u32));
                 }
             }
             0x55 => { // SSTORE
                 if stack.len() >= 2 {
-                    let key: u32 = stack[0];
-                    let value: u32 = stack[1];
+                    let key: u32 = (stack[0].as_limbs()[0] % 8383489) as u32;
+                    let value: u32 = (stack[1].as_limbs()[0] % 8383489) as u32;
                     self.storage_ops.push((key, value));
                 }
             }
@@ -185,6 +271,7 @@ impl<DB: revm::Database> Inspector<DB> for TraceInspector {
             stack,
             memory,
             storage: Vec::new(),
+            block_context,
         };
 
         self.trace.push(trace_row);
