@@ -137,14 +137,14 @@ StateDiff mode operates on the **optimistic rollup trust model**:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     StateDiff Proving                        │
+│                     StateDiff Proving                       │
 ├─────────────────────────────────────────────────────────────┤
-│  1. Trusted Execution (revm)                                 │
-│     ↓ Execute bytecode                                        │
+│  1. Trusted Execution (revm)                                │
+│     ↓ Execute bytecode                                      │
 │  2. Extract State Diff                                      │
-│     ↓ Only storage writes                                    │
+│     ↓ Only storage writes                                   │
 │  3. Compute State Roots                                     │
-│     ↓ Poseidon2 commitment                                   │
+│     ↓ Poseidon2 commitment                                  │
 │  4. Generate Labrador Proof                                 │
 │     ↓ Proves diff computation is correct                    │
 │  5. Output: (initial_root, diff, final_root, proof)         │
