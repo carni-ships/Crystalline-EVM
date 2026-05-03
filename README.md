@@ -45,7 +45,7 @@ A zero-knowledge Ethereum Virtual Machine that generates proofs using lattice-ba
 
 - **First Lattice-Based zkEVM**: Uses Labrador SNARK (lattice cryptography) instead of STARKs or Groth16
 - **Lattice-Native Proving**: Uses Labrador SNARK protocol with field Q=8,383,489
-- **ANE Acceleration**: Apple Neural Engine accelerates MatVec operations (~2ms per proof)
+- **ANE Acceleration via Anemone**: Apple Neural Engine accelerates MatVec operations (~2ms per proof) via [Anemone](https://github.com/carni-ships/Anemone)
 - **Two Trace Modes**:
   - **Simplified (RevmTraceRow)**: 6.7 elements/row, faster TRACE phase
   - **Full (TraceRow)**: 40 elements/row, more detailed constraints
@@ -101,8 +101,12 @@ Crystalline-EVM-src/
 │   │   │   └── keccak.rs      # Batch Keccak operations
 │   │   └── verifier/      # Proof verification
 │   └── benches/           # Benchmarks (mode_comparison, block_benchmark)
-├── orion-backend/          # ANE runtime bindings (Apple Neural Engine)
-└── orion-sys/              # FFI bindings for latticezk library
+├── orion-sys/              # FFI bindings for Anemone (latticezk)
+└── orion-backend/          # Internal ANE runtime helpers
+
+External:
+└── Anemone/               # ANE-accelerated lattice crypto (separate repo)
+    └── core/latticezk.m   # Labrador proving via Apple Neural Engine
 ```
 
 ---
@@ -135,8 +139,9 @@ Full mode is ~10x faster in PROVE phase despite processing more data due to bett
 
 ## Dependencies
 
-- **orion-backend**: ANE runtime for Apple Neural Engine access
-- **orion-sys**: FFI bindings for Labrador protocol (latticezk)
+- **Anemone**: ANE-accelerated lattice crypto library ([GitHub](https://github.com/carni-ships/Anemone)) - provides `latticezk_*` functions via FFI
+- **orion-sys**: Rust FFI bindings for Anemone's latticezk library
+- **orion-backend**: Internal ANE runtime helpers
 - **revm**: Rust Ethereum Virtual Machine implementation
 - **rayon**: Parallel iterator support for multi-threaded proving
 
