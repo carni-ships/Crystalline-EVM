@@ -17,9 +17,9 @@ Crystalline-EVM is the **first production zkEVM to use lattice-based SNARKs** (M
 ┌─────────────────────────────────────────────────────────────┐
 │  Crystalline-EVM: Lattice-native zkEVM                      │
 │                                                             │
-│  • L=256 witness size, Q=8,383,489 field                   │
-│  • ANE-accelerated MatVec (~2ms per proof)                 │
-│  • No trusted setup, post-quantum resistant                │
+│  • L=256 witness size, Q=8,383,489 field                    │
+│  • ANE-accelerated MatVec (~2ms per proof)                  │
+│  • No trusted setup, post-quantum resistant                 │
 │  • 96-byte constant-size proofs                             │
 └─────────────────────────────────────────────────────────────┘
 ```
