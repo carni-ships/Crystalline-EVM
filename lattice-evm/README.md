@@ -9,32 +9,32 @@ A zero-knowledge Ethereum Virtual Machine that generates proofs using lattice-ba
 │           Crystalline-EVM Architecture                      │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │         Ethereum Block (transactions)               │   │
+│  │         Ethereum Block (transactions)                │   │
 │  └──────────────────────────────────────────────────────┘   │
-│                          │                                   │
-│                          ▼                                   │
+│                          │                                  │
+│                          ▼                                  │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │           EVM Execution (revm + custom)             │   │
-│  │           • RevmTraceRow (simplified, 6.7 elems/row)  │   │
-│  │           • TraceRow (full, 40 elems/row)           │   │
+│  │           EVM Execution (revm + custom)              │   │
+│  │           • RevmTraceRow (simplified, 6.7 elems/row) │   │
+│  │           • TraceRow (full, 40 elems/row)            │   │
 │  └──────────────────────────────────────────────────────┘   │
-│                          │                                   │
-│                          ▼                                   │
+│                          │                                  │
+│                          ▼                                  │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │           Commit-Prove Element Extraction             │   │
+│  │           Commit-Prove Element Extraction            │   │
 │  └──────────────────────────────────────────────────────┘   │
-│                          │                                   │
-│                          ▼                                   │
+│                          │                                  │
+│                          ▼                                  │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │  ★ Labrador SNARK Proving (ANE-accelerated) ★       │   │
-│  │  • L=256 witness size, Q=8383489 field             │   │
+│  │  ★ Labrador SNARK Proving (ANE-accelerated) ★        │   │
+│  │  • L=256 witness size, Q=8383489 field               │   │
 │  │  • Keygen once, share pk/vk across threads           │   │
-│  │  • Proofs verified via latticezk_verify (cryptographic)│   │
+│  │  • Proofs verified via latticezk_verify              │   │
 │  └──────────────────────────────────────────────────────┘   │
-│                          │                                   │
-│                          ▼                                   │
+│                          │                                  │
+│                          ▼                                  │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │         Constant-Size Final Proof (96 bytes)        │   │
+│  │         Constant-Size Final Proof (96 bytes)         │   │
 │  └──────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
