@@ -59,13 +59,16 @@ A zero-knowledge Ethereum Virtual Machine that generates proofs using lattice-ba
 
 Real-time block processing on M3 Max (12 threads):
 
-| Block | Txs | Calls | Proofs | TRACE | COMMIT | PROVE | Gas |
-|-------|-----|-------|--------|-------|--------|-------|-----|
-| #25008365 | 225 | 171 | 168 | 0.85ms | 0.16ms | 257ms | 56.5M |
-| #25008366 | 154 | 128 | 120 | 0.75ms | 0.14ms | 193ms | 35.7M |
-| #25008367 | 265 | 203 | 179 | 0.88ms | 0.13ms | 236ms | 62.2M |
+| Block | Txs | EVM Exec | TRACE | COMMIT | PROVE | Proofs | Gas |
+|-------|-----|----------|-------|--------|-------|--------|-----|
+| #25008365 | 225 | 4.2ms | 0.85ms | 0.16ms | 257ms | 168/225 | 56.5M |
+| #25008366 | 154 | 3.1ms | 0.75ms | 0.14ms | 193ms | 120/154 | 35.7M |
+| #25008367 | 265 | 5.1ms | 0.88ms | 0.13ms | 236ms | 179/265 | 62.2M |
 
-**Per-proof**: ~1.5-2ms (ANE-accelerated Labrador)
+**Notes:**
+- EVM Exec: Total EVM execution time for all transactions (including omitted ones)
+- Proofs: Number of proofs generated vs total transactions (precompiles and transfers may be omitted)
+- Per-proof: ~1.5-2ms (ANE-accelerated Labrador)
 
 ---
 
