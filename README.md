@@ -70,17 +70,60 @@ Real-time block processing on M3 Max (12 threads):
 - Proofs: Number of proofs generated vs total transactions (precompiles and transfers may be omitted)
 - Per-proof: ~1.5-2ms (ANE-accelerated Labrador)
 
-See [lattice-evm/README.md](./lattice-evm/README.md) for detailed benchmarks.
+See detailed benchmarks in the [benches](./lattice-evm/benches/) directory.
 
 ---
 
 ## Why Lattice-Based?
+
+Lattice-based cryptography offers unique advantages for zero-knowledge proofs:
 
 | Approach | Proof Size | Trusted Setup | Quantum Resistant |
 |----------|-----------|--------------|-------------------|
 | **Lattice (Crystalline)** | 96 bytes | No | Yes |
 | Groth16 | ~200 bytes | Yes | No |
 | STARK | 100+ KB | No | Yes |
+
+### Why This Matters
+
+**1. No Trusted Setup Ceremony**
+Groth16 and other pairing-based proofs require a elaborate ceremony to generate toxic waste. Lattice-based proofs (Labrador SNARK) are based on Module-SIS/Module-LWE hardness assumptions — no ceremony needed.
+
+**2. Post-Quantum Security**
+Shor's algorithm breaks RSA and elliptic curves. A quantum computer could compromise Ethereum's security today if it has a sufficiently large Qubit count. Lattice problems are believed to be quantum-resistant.
+
+**3. Hardware Acceleration**
+The Apple Neural Engine (ANE) is designed for matrix operations — exactly what's needed for lattice-based MatVec. This enables ~1.5-2ms per proof on consumer hardware.
+
+**4. Real-Time Proving**
+At ~1.5ms per proof with 12 threads, we can prove Ethereum blocks faster than they are mined (~12 seconds). This enables:
+- **Light clients** that verify proofs without running full nodes
+- **Layer 2 validity proofs** without slow aggregators
+- **Mobile/proving** on iPhone/Mac for edge deployment
+
+### The Problem We Solve
+
+Current zkEVMs face a trilemma:
+
+```
+         ┌─────────────────────────────────────────┐
+         │          THE ZK PROVING TRIPLEMMA        │
+         │                                          │
+         │    Proving Speed                         │
+         │    (hardware acceleration)              │
+         │          ●                               │
+         │         /│\                              │
+         │        / │ \                             │
+         │       /  │  \                            │
+         │   ┌──/───┼───\──┐                        │
+         │   │ Proof │Quantum│                        │
+         │   │ Size  │Resist │                        │
+         │   │  ●    │   ●   │                        │
+         │   └───────┴───────┘                        │
+         └─────────────────────────────────────────┘
+
+Crystalline-EVM: Achieves all three via lattice + ANE acceleration
+```
 
 ---
 
@@ -100,7 +143,7 @@ Crystalline-EVM-src/
 │   │   │   ├── blake3.rs      # Batch Blake3 operations
 │   │   │   └── keccak.rs      # Batch Keccak operations
 │   │   └── verifier/      # Proof verification
-│   └── benches/           # Benchmarks (mode_comparison, block_benchmark)
+│   └── benches/           # Benchmarks and tests
 ├── orion-sys/              # FFI bindings for Anemone (latticezk)
 └── orion-backend/          # Internal ANE runtime helpers
 
@@ -119,6 +162,38 @@ External:
 | **Full** | 40.0 | 7 | 0.02ms | 11ms | Detailed proving |
 
 Full mode is ~10x faster in PROVE phase despite processing more data due to better batch parallelization.
+
+---
+
+## What We Can Achieve
+
+### Current Capabilities
+- Prove Ethereum blocks in real-time (~1.5-2ms per proof on M3 Max)
+- 96-byte constant-size proofs verifiable in milliseconds
+- 100% of contract calls now traced and proved (except CREATE)
+- Parallel proving across 12 threads
+
+### Use Cases
+
+**1. Light Clients**
+Instead of running a full Ethereum node, light clients could verify a 96-byte proof that the block is valid. No syncing, no storage, just verify.
+
+**2. Mobile Proving**
+Run proving on iPhone/Mac via ANE. Generate proofs for your own transactions without depending on third-party provers.
+
+**3. Layer 2 Validity Proofs**
+Generate validity proofs for rollups without Groth16 ceremonies or slow STARKs. Fast finality with cryptographic certainty.
+
+**4. Auditable Privacy**
+Provers can generate proofs without revealing transaction details — only that the execution was correct.
+
+### Roadmap
+
+- [ ] **Recursive proving** — Prove multiple blocks together for even smaller proofs
+- [ ] **Full EVM compatibility** — Complete opcode coverage for all contract types
+- [ ] **GPU proving** — Extend ANE acceleration to discrete GPUs
+- [ ] **Distributed proving** — Multiple machines collaborating on one block
+- [ ] **ZK bridges** — Trustless cross-chain message passing via proofs
 
 ---
 
