@@ -237,15 +237,23 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
     let mut contract_bytecodes: Vec<(String, Vec<u8>)> = Vec::new();
 
     for tx in &contract_calls {
-        if let Some(ref to) = tx.to {
-            if !to.is_empty() {
-                if let Ok(code) = client.get_code(to, &block_hex).await {
-                    // Accept all non-empty bytecodes (crashes are handled via thread isolation)
-                    // Limit size to 50KB to exclude obviously problematic bytecode
-                    if !code.is_empty() && code.len() <= 50000 && code.len() > 2 {
-                        contract_bytecodes.push((to.clone(), code));
-                    }
+        if tx.to.is_none() || tx.to.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+            continue;
+        }
+        let to = tx.to.as_ref().unwrap();
+        match client.get_code(to, &block_hex).await {
+            Ok(code) => {
+                // Trace ALL contracts, even if empty (produces minimal trace)
+                // Just skip if too small to be meaningful
+                if code.len() <= 2 {
+                    contract_bytecodes.push((to.clone(), vec![0x00]));
+                } else {
+                    contract_bytecodes.push((to.clone(), code));
                 }
+            }
+            Err(_) => {
+                // Try tracing with minimal bytecode if RPC fails
+                contract_bytecodes.push((to.clone(), vec![0x00]));
             }
         }
     }
@@ -265,7 +273,7 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
             // Set panic hook to suppress output
             panic::set_hook(Box::new(|_| {}));
 
-            let gas_limit = if code.len() > 2000 { 2_000_000 } else if code.len() > 500 { 1_000_000 } else { 500_000 };
+            let gas_limit = if code.len() > 10000 { 30_000_000 } else if code.len() > 2000 { 10_000_000 } else if code.len() > 500 { 5_000_000 } else { 1_000_000 };
 
             match execute_evm_with_trace(&code, &[], gas_limit) {
                 Ok((state_diff, trace)) => {
