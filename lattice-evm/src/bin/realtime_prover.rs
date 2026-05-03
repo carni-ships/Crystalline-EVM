@@ -235,9 +235,27 @@ async fn process_block(block_number: u64) -> Option<(usize, usize, usize, usize,
     use lattice_evm::evm::EthClient;
     let client = EthClient::default();
     let mut contract_bytecodes: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut create_count = 0;
 
     for tx in &contract_calls {
-        if tx.to.is_none() || tx.to.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+        if tx.to.is_none() {
+            // CREATE transaction - trace the creation code from tx.input
+            if !tx.input.is_empty() && tx.input != "0x" {
+                // Convert hex string to bytes if needed
+                let input_bytes = if tx.input.starts_with("0x") {
+                    hex::decode(&tx.input[2..]).unwrap_or_else(|_| tx.input.as_bytes().to_vec())
+                } else {
+                    tx.input.as_bytes().to_vec()
+                };
+                if input_bytes.len() > 2 {
+                    create_count += 1;
+                    // Use placeholder address since we don't know deployed address yet
+                    contract_bytecodes.push((format!("CREATE:{}", tx.hash), input_bytes));
+                }
+            }
+            continue;
+        }
+        if tx.to.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
             continue;
         }
         let to = tx.to.as_ref().unwrap();
