@@ -528,7 +528,10 @@ impl AugmentedProof {
         // Claimed sum
         let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
 
-        self.sumcheck_proof.verify(claimed_sum)
+        // Transcript used during proving: [r, comm_w_old, comm_w_cccs, comm_w_new]
+        let transcript = &[self.r, self.comm_w_old, self.comm_w_cccs, comm_w_new];
+
+        self.sumcheck_proof.verify(claimed_sum, transcript)
     }
 
     /// Serialize augmented proof to bytes for storage in NovaIVCProof
@@ -1318,8 +1321,15 @@ impl AugmentedProofSuperNeo {
         // Claimed sum
         let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
 
+        // Transcript used during proving: r_list + c_list + [comm_w_new]
+        let transcript: Vec<u32> = all_r.iter()
+            .chain(self.comm_w_cccs_list.iter())
+            .chain([comm_w_new].iter())
+            .copied()
+            .collect();
+
         // Verify sumcheck
-        self.sumcheck_proof.verify(claimed_sum)
+        self.sumcheck_proof.verify(claimed_sum, &transcript)
     }
 
     /// Serialize to bytes

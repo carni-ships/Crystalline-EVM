@@ -113,7 +113,7 @@ impl SNARKProver {
         // Step 1: Verify sumcheck
         // The sumcheck proof should prove that Σ C(x) = claimed_sum
         // where claimed_sum should be 0 if all constraints are satisfied
-        let sumcheck_valid = proof.sumcheck_proof.verify(proof.sumcheck_proof.claims[0]);
+        let sumcheck_valid = proof.sumcheck_proof.verify(proof.sumcheck_proof.claims[0], &[]);
 
         // Step 2: Verify opening proof
         // The opening proof should confirm f(challenge) = claimed_value
