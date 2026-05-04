@@ -55,3 +55,11 @@ path = "src/bin/prover.rs"
 [[bin]]
 name = "lattice-evm-verifier"
 path = "src/bin/verifier.rs"
+
+[[bin]]
+name = "nova_ivc_benchmark"
+path = "src/bin/nova_ivc_benchmark.rs"
+
+[[bin]]
+name = "real_block_benchmark"
+path = "src/bin/real_block_benchmark.rs"
