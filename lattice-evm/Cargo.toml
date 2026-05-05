@@ -60,6 +60,3 @@ path = "src/bin/verifier.rs"
 name = "nova_ivc_benchmark"
 path = "src/bin/nova_ivc_benchmark.rs"
 
-[[bin]]
-name = "real_block_benchmark"
-path = "src/bin/real_block_benchmark.rs"
