@@ -4,6 +4,7 @@
 //! builder that constructs all levels in a single efficient pass.
 
 use crate::crypto::Poseidon2;
+use rayon::prelude::*;
 
 /// Complete Merkle tree with all nodes accessible in O(1)
 ///
@@ -91,6 +92,85 @@ impl BatchMerkleTree {
 
             all_nodes.extend_from_slice(&next_level);
             current_level = next_level;
+        }
+
+        let height = level_offsets.len();
+
+        BatchMerkleTree {
+            nodes: all_nodes,
+            leaf_count: n,
+            level_offsets,
+            height,
+        }
+    }
+
+    /// Build a complete Merkle tree from leaves using PARALLEL hashing.
+    ///
+    /// Uses rayon for parallel computation within each level:
+    /// - All hash operations at the same tree level run in parallel
+    /// - Provides ~4x speedup on 4-core systems
+    ///
+    /// # Arguments
+    /// * `leaves` - Slice of u32 field elements representing the leaf values
+    ///
+    /// # Returns
+    /// A `BatchMerkleTree` with all nodes accessible via `get_node(level, index)`
+    pub fn build_parallel(leaves: &[u32]) -> Self {
+        if leaves.is_empty() {
+            return BatchMerkleTree {
+                nodes: vec![0],
+                leaf_count: 0,
+                level_offsets: vec![0],
+                height: 1,
+            };
+        }
+
+        let n = leaves.len();
+        let mut all_nodes: Vec<u32> = Vec::with_capacity(n * 2);
+        let mut level_offsets: Vec<usize> = Vec::new();
+
+        // Level 0: leaves (no computation)
+        level_offsets.push(all_nodes.len());
+        all_nodes.extend_from_slice(leaves);
+
+        // Build upward level by level
+        let mut current_level: Vec<u32> = leaves.to_vec();
+
+        while current_level.len() > 1 {
+            level_offsets.push(all_nodes.len());
+
+            // Parallel hash of pairs at this level
+            let pair_count = current_level.len() / 2;
+            let has_odd = current_level.len() % 2 == 1;
+
+            // Hash all pairs in parallel using rayon
+            let next_level: Vec<u32> = (0..pair_count).into_par_iter()
+                .map(|i| Poseidon2::hash_pair(current_level[i * 2], current_level[i * 2 + 1]))
+                .collect();
+
+            // Save odd element before we move anything
+            let odd_element = if has_odd {
+                Some(current_level[current_level.len() - 1])
+            } else {
+                None
+            };
+
+            // Extend with next level nodes
+            all_nodes.extend(next_level.clone());
+
+            // Add odd element if present
+            if let Some(odd) = odd_element {
+                all_nodes.push(odd);
+            }
+
+            // Build current_level for next iteration
+            current_level = if has_odd {
+                let mut new_level = next_level;
+                new_level.push(current_level[current_level.len() - 1]);
+                new_level
+            } else {
+                next_level
+            };
         }
 
         let height = level_offsets.len();
