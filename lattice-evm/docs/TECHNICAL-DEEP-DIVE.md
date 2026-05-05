@@ -512,14 +512,15 @@ pub struct AugmentedProof {
 
 ### ANE Acceleration
 
-The Apple Neural Engine performs matrix multiplication at ~38 TOPS:
+The ANE accelerates **matrix-vector multiplication** (MatVec) in Labrador:
 
 ```rust
-// Poseidon2 hashing: w[i+1] = Poseidon2(w[i], element[i])
-// This is a 8×8 matrix multiplication per hash!
+// MatVec: result[i] = Σ_j A[i][j] * s[j]
+// Used in Labrador's short vector response verification
+// Computed at ~38 TOPS on ANE
 
-// On CPU: sequential, ~1000 cycles per hash
-// On ANE: parallel for all 256 elements, ~10 cycles per hash
+// Poseidon2 hashing: done on CPU (pure Rust modular arithmetic)
+// NOT ANE-accelerated
 ```
 
 ### Parallel Batch Processing

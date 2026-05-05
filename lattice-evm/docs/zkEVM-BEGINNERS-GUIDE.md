@@ -177,18 +177,17 @@ Verification checks:
 
 ## Why Is Our zkEVM Fast?
 
-### 1. ANE Acceleration
+### 1. ANE Acceleration for MatVec
 
-The **Apple Neural Engine (ANE)** performs matrix multiplication at ~38 TOPS with incredible energy efficiency:
+The **Apple Neural Engine (ANE)** accelerates **matrix-vector multiplication** in Labrador proving:
 
 ```rust
-// Instead of slow CPU hashing:
-for elem in elements {
-    hash = Poseidon2::hash_pair(hash, elem);
-}
-
-// ANE does this in parallel across thousands of elements!
+// MatVec: result = A * s (matrix-vector multiply)
+// Used in Labrador proof verification: <response_vector, commitment> = dot_product
+// ANE computes this at ~38 TOPS in parallel
 ```
+
+**Note**: Poseidon2 hashing is done on CPU (pure Rust), NOT on ANE.
 
 ### 2. Parallel Batch Proving
 
