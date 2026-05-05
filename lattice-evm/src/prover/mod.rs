@@ -32,7 +32,7 @@ pub mod parallel_prove;
 pub mod snark_prover;
 pub mod snark_enhanced_prover;
 
-pub use snark_prover::{SNARKProver, SNARKProof, BatchSNARKProof, verify_batch};
+pub use snark_prover::{SNARKProver, SNARKProof, BatchSNARKProof, verify_batch, verify_batch_cryptographic, verify_snark_proof_cryptographic};
 pub use snark_enhanced_prover::{SNARKTraceWitness, CombinedProof, FullProvingResult, SNARKEnhancedProver};
 
 use crate::air::{LatticeAIR, trace_to_field_elements};
@@ -390,6 +390,51 @@ impl Prover {
     /// Prove with custom witness
     pub fn prove_witness(&self, witness: &[f32]) -> Result<LatticeZKProof, orion_backend::BackendError> {
         self.prover.prove(witness)
+    }
+
+    /// Prove multiple witnesses in batch (amortizes matrix expansion)
+    ///
+    /// All witnesses share the same proving key, so the matrix expansion
+    /// is done only once. This provides significant speedup when proving
+    /// many small witnesses.
+    ///
+    /// # Arguments
+    /// * `witnesses` - Slice of witness vectors, each of length LATTICEZK_L (256)
+    ///
+    /// # Returns
+    /// Vector of proofs, one per witness
+    pub fn prove_batch(&self, witnesses: &[&[f32]]) -> Result<Vec<LatticeZKProof>, orion_backend::BackendError> {
+        self.prover.prove_batch(witnesses)
+    }
+
+    /// Prove multiple witnesses using GPU batch (forces GPU path)
+    ///
+    /// Uses the GPU via orion_gpu_matvec_batch for TRUE PARALLEL MatVec.
+    /// Returns error if GPU is not available.
+    ///
+    /// # Arguments
+    /// * `witnesses` - Slice of witness vectors, each of length LATTICEZK_L (256)
+    ///
+    /// # Returns
+    /// Vector of proofs, one per witness
+    pub fn prove_batch_gpu(&self, witnesses: &[&[f32]]) -> Result<Vec<LatticeZKProof>, orion_backend::BackendError> {
+        self.prover.prove_batch_gpu(witnesses)
+    }
+
+    /// Prove multiple witnesses using fused GPU kernel (MatVec + RNS + CRT)
+    ///
+    /// Uses the new `matvec_rns_crt` GPU kernel which computes MatVec,
+    /// all 5 RNS residues, and CRT reconstruction in a single GPU dispatch.
+    ///
+    /// This eliminates the need for ANE-based RNS decomposition.
+    ///
+    /// # Arguments
+    /// * `witnesses` - Slice of witness vectors, each of length LATTICEZK_L (256)
+    ///
+    /// # Returns
+    /// Vector of proofs, one per witness
+    pub fn prove_batch_fused(&self, witnesses: &[&[f32]]) -> Result<Vec<LatticeZKProof>, orion_backend::BackendError> {
+        self.prover.prove_batch_fused(witnesses)
     }
 
     /// Verify a proof using the stored verification key

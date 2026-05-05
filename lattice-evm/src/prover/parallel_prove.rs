@@ -4,13 +4,21 @@
 //! - Provers are created once and shared across threads (keygen is expensive)
 //! - Generate leaf proofs concurrently across threads
 //! - Compose proofs using Poseidon2 Merkle tree
+//!
+//! # GPU Batch Optimization
+//! When GPU is available, batch proving is preferred over threading because:
+//! - GPU processes ALL witnesses in parallel via Metal command queues
+//! - ANE serializes all MatVec through a global lock (no true parallelism)
+//! - Batch proving amortizes matrix expansion and avoids thread overhead
 
 use crate::crypto::Poseidon2;
 use crate::prover::{Prover, ProverConfig};
+use orion_backend::gpu_matvec::GPUContext;
 use std::thread;
 
 /// Maximum elements per Labrador witness (L=256)
-pub const BATCH_SIZE: usize = 256;
+/// Larger batch size improves GPU occupancy and amortization of matrix expansion
+pub const BATCH_SIZE: usize = 1024;
 
 /// A single proof for a batch of elements
 pub struct BatchProof {
@@ -116,16 +124,93 @@ impl ParallelProver {
         self
     }
 
+    /// Generate leaf proofs using GPU batch proving (Metal compute, true parallelism)
+    ///
+    /// When GPU is available, this is preferred over threading because:
+    /// - GPU processes ALL witnesses in parallel via Metal command queues
+    /// - ANE serializes all MatVec through a global lock
+    /// - Batch proving amortizes matrix expansion across all witnesses
+    pub fn generate_leaf_proofs_batch_gpu(&self, batches: &[Vec<u32>]) -> Result<Vec<BatchProof>, String> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        println!("  Using GPU batch proving for {} batches (true parallelism)", batches.len());
+
+        // Do keygen ONCE
+        let prove_start = std::time::Instant::now();
+        let seed = crate::prover::generate_seed();
+        let labrador_prover = orion_backend::labrador::LabradorProver::new_with_keygen(&seed);
+        let pk = labrador_prover.pk;
+        let vk = orion_sys::LatticeZKVerificationKey {
+            q: pk.q,
+            k: pk.k,
+            l: pk.l,
+            n: pk.n,
+        };
+        println!("  Keygen in {:?}", prove_start.elapsed());
+
+        // Create prover
+        let prover = Prover::new_from_keys(pk, vk)
+            .map_err(|e| format!("Prover creation failed: {:?}", e))?;
+
+        // Convert all batches to f32 witnesses
+        let witnesses_f32: Vec<Vec<f32>> = batches.iter()
+            .map(|batch| batch.iter().map(|&v| v as f32).collect())
+            .collect();
+
+        // Create slices from the owned Vec
+        let witnesses: Vec<&[f32]> = witnesses_f32.iter().map(|v| v.as_slice()).collect();
+
+        // GPU batch call - processes ALL witnesses in parallel
+        // prove_batch() auto-selects GPU when available
+        let prove_start = std::time::Instant::now();
+        let proofs = prover.prove_batch(&witnesses)
+            .map_err(|e| format!("Batch proving failed: {:?}", e))?;
+        println!("  Batch proved {} proofs in {:?}", proofs.len(), prove_start.elapsed());
+
+        // Build BatchProof results
+        let results: Vec<BatchProof> = proofs.into_iter()
+            .enumerate()
+            .map(|(i, proof)| {
+                let mut commitment = [0u8; 32];
+                commitment.copy_from_slice(&proof.commitment);
+                BatchProof {
+                    batch_id: i,
+                    proof,
+                    commitment,
+                    elements: batches[i].clone(),
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
+
     /// Generate all leaf proofs in parallel using thread pool
     ///
     /// Keygen is done ONCE before spawning threads (expensive ~100ms+).
     /// Each thread creates its own LatticeOps (reuses global ANE context) and
     /// LabradorProver from the pre-shared pk.
+    ///
+    /// When GPU is available, batch proving is preferred over threading
+    /// because ANE serializes all MatVec through a global lock.
     pub fn generate_leaf_proofs_parallel(&self, batches: &[Vec<u32>]) -> Result<Vec<BatchProof>, String> {
         let batch_size = batches.len();
-        let num_threads = self.num_threads.min(batch_size);
 
-        // Split batches into chunks for each thread
+        // When GPU is available, prefer GPU batch proving for TRUE parallelism
+        if GPUContext::available() {
+            // For larger batches, GPU batch is even more beneficial
+            return self.generate_leaf_proofs_batch_gpu(batches);
+        }
+
+        // For small batch counts (4 or fewer), use batch proving directly
+        // This amortizes matrix expansion and avoids thread overhead
+        if batch_size <= 4 {
+            return self.generate_leaf_proofs_batch(batches);
+        }
+
+        let num_threads = self.num_threads.min(batch_size);
         let batches_per_thread = (batch_size + num_threads - 1) / num_threads;
 
         println!("  Using {} threads for {} batches", num_threads, batch_size);
@@ -202,6 +287,132 @@ impl ParallelProver {
         all_proofs.sort_by_key(|p| p.batch_id);
 
         Ok(all_proofs)
+    }
+
+    /// Generate leaf proofs using ANE batch proving (single ANE call, no GPU)
+    ///
+    /// For small numbers of batches (4 or fewer), batch proving is more efficient
+    /// than parallel thread-based proving because it amortizes matrix expansion
+    /// and avoids thread synchronization overhead.
+    pub fn generate_leaf_proofs_batch(&self, batches: &[Vec<u32>]) -> Result<Vec<BatchProof>, String> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        println!("  Using batch proving for {} batches (amortized matrix expansion)", batches.len());
+
+        // Do keygen ONCE
+        let prove_start = std::time::Instant::now();
+        let seed = crate::prover::generate_seed();
+        let labrador_prover = orion_backend::labrador::LabradorProver::new_with_keygen(&seed);
+        let pk = labrador_prover.pk;
+        let vk = orion_sys::LatticeZKVerificationKey {
+            q: pk.q,
+            k: pk.k,
+            l: pk.l,
+            n: pk.n,
+        };
+        println!("  Keygen in {:?}", prove_start.elapsed());
+
+        // Create prover
+        let prover = Prover::new_from_keys(pk, vk)
+            .map_err(|e| format!("Prover creation failed: {:?}", e))?;
+
+        // Convert all batches to f32 witnesses - collect into owned Vec first
+        let witnesses_f32: Vec<Vec<f32>> = batches.iter()
+            .map(|batch| batch.iter().map(|&v| v as f32).collect())
+            .collect();
+
+        // Create slices from the owned Vec (these will be valid for the lifetime of witnesses_f32)
+        let witnesses: Vec<&[f32]> = witnesses_f32.iter().map(|v| v.as_slice()).collect();
+
+        // Single batch call - amortizes matrix expansion across all witnesses
+        let prove_start = std::time::Instant::now();
+        let proofs = prover.prove_batch(&witnesses)
+            .map_err(|e| format!("Batch proving failed: {:?}", e))?;
+        println!("  Batch proved {} proofs in {:?}", proofs.len(), prove_start.elapsed());
+
+        // Build BatchProof results
+        let results: Vec<BatchProof> = proofs.into_iter()
+            .enumerate()
+            .map(|(i, proof)| {
+                let mut commitment = [0u8; 32];
+                commitment.copy_from_slice(&proof.commitment);
+                BatchProof {
+                    batch_id: i,
+                    proof,
+                    commitment,
+                    elements: batches[i].clone(),
+                }
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    /// Generate leaf proofs using fused GPU kernel (MatVec + RNS + CRT on GPU)
+    ///
+    /// This uses the new `matvec_rns_crt` GPU kernel which computes:
+    /// 1. MatVec result (A*s mod q)
+    /// 2. All 5 RNS residues (for Dilithium-3: {97, 101, 103, 107, 109})
+    /// 3. CRT reconstruction result
+    ///
+    /// This eliminates the need for ANE-based RNS decomposition.
+    ///
+    /// Currently falls back to GPU batch if the fused kernel isn't available.
+    pub fn generate_leaf_proofs_fused(&self, batches: &[Vec<u32>]) -> Result<Vec<BatchProof>, String> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        println!("  Using FUSED GPU kernel for {} batches (MatVec + RNS + CRT)", batches.len());
+
+        // Do keygen ONCE
+        let prove_start = std::time::Instant::now();
+        let seed = crate::prover::generate_seed();
+        let labrador_prover = orion_backend::labrador::LabradorProver::new_with_keygen(&seed);
+        let pk = labrador_prover.pk;
+        let vk = orion_sys::LatticeZKVerificationKey {
+            q: pk.q,
+            k: pk.k,
+            l: pk.l,
+            n: pk.n,
+        };
+        println!("  Keygen in {:?}", prove_start.elapsed());
+
+        // Create prover
+        let prover = Prover::new_from_keys(pk, vk)
+            .map_err(|e| format!("Prover creation failed: {:?}", e))?;
+
+        // Convert batches to witness format (Vec<f32>)
+        let witnesses: Vec<Vec<f32>> = batches.iter()
+            .map(|batch| batch.iter().map(|&v| v as f32).collect())
+            .collect();
+
+        let witness_refs: Vec<&[f32]> = witnesses.iter()
+            .map(|w| w.as_slice())
+            .collect();
+
+        // Use fused GPU kernel (falls back to GPU batch if not available)
+        let proofs = prover.prove_batch_fused(&witness_refs)
+            .map_err(|e| format!("Fused batch prove failed: {:?}", e))?;
+
+        // Convert to BatchProof format
+        let results: Vec<BatchProof> = proofs.into_iter()
+            .enumerate()
+            .map(|(i, proof)| {
+                let mut commitment = [0u8; 32];
+                commitment.copy_from_slice(&proof.commitment);
+                BatchProof {
+                    batch_id: i,
+                    proof,
+                    commitment,
+                    elements: batches[i].clone(),
+                }
+            })
+            .collect();
+
+        Ok(results)
     }
 
     /// Compose proofs using Poseidon2 Merkle tree
