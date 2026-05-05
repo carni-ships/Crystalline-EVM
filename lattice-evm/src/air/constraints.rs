@@ -476,7 +476,6 @@ impl EVMAIREvaluator {
         // The constraint system only verifies per-row state transitions.
 
         // ADD: pops 2, pushes 1 -> net stack delta = -1 (stack_before - 1 = stack_after)
-        // NOTE: Only verifiable equality constraint - stack delta must match
         self.constraints.push((
             OpCode::ADD,
             vec![
@@ -487,6 +486,14 @@ impl EVMAIREvaluator {
                     vec![5, 4], // stack_after, stack_before
                     vec![1, -1], // after - before
                     -1, // expected delta = -1 (decreases stack by 1)
+                ),
+                // Arithmetic: stack_top + stack_second = stack_third (mod Q)
+                // columns 17, 18, 19: a + b - c = 0
+                AIRConstraint::with_expected(
+                    ConstraintType::Arithmetic,
+                    vec![17, 18, 19],
+                    vec![1, 1, -1],
+                    0,
                 ),
             ],
         ));
@@ -615,22 +622,19 @@ impl EVMAIREvaluator {
         ));
 
         // JUMPI: conditional jump - requires two stack items (condition, target)
-        // Verifies: if condition != 0, then target must be valid JUMPDEST
-        // Note: This is a simplified constraint - full verification needs cross-row PC check
+        // Verifies: (condition == 0) OR (is_jumpdest_at_target == 1)
+        // In polynomial form: condition * (1 - is_jumpdest_at_target) == 0
+        // i.e., if condition == 1 (jump taken), then is_jumpdest_at_target must be 1
         self.constraints.push((
             OpCode::JUMPI,
             vec![
-                // For JUMPI, the condition is checked outside constraints (via prover verification)
-                // The target must be a valid JUMPDEST if the condition is non-zero
-                // Simplified: just verify target is valid JUMPDEST when jump is taken
-                // Full constraint: (condition == 0) OR (is_jumpdest_at_target == 1)
-                // This is implemented as: is_jumpdest_at_target * (1 - condition) + condition * 1 = 1
-                // But for simplicity, we verify the JUMPDEST constraint directly
+                // Constraint: column_17 (condition) * (1 - column_21) == 0
+                // Expanded: 1*condition + (-1)*condition*is_jumpdest = 0
                 AIRConstraint::with_expected(
                     ConstraintType::JumpDest,
-                    vec![21], // is_jumpdest_at_target
-                    vec![1],
-                    1,
+                    vec![17, 21], // condition, is_jumpdest_at_target
+                    vec![1, -1],  // condition - condition*is_jumpdest = 0
+                    0,
                 ),
             ],
         ));

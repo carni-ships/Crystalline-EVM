@@ -327,7 +327,11 @@ impl SumcheckProof {
 
             if round < n - 1 {
                 claims.push(final_evals[round]);
-                current_poly = current_poly.partial_evaluate(round, challenge);
+                // Partial evaluate at the last variable of current_poly
+                // After sum_over_first_var, current_poly has num_vars-1 variables
+                // We need to evaluate at the (num_vars-1)th variable of original, which is now at index 0 of current_poly
+                let var_idx = current_poly.num_vars.saturating_sub(1);
+                current_poly = current_poly.partial_evaluate(var_idx, challenge);
             } else {
                 claims.push(final_evals[round]);
             }
@@ -353,8 +357,12 @@ impl SumcheckProof {
     /// Verification checks:
     /// 1. claims[0] = claimed_sum
     /// 2. final_evals[i] = claims[i+1] for all i (key sumcheck invariant)
-    /// 3. challenges match transcript derivation
+    /// 3. challenges match transcript derivation (if transcript provided)
     /// 4. Merkle authentication paths verify final_evals against commitments
+    ///
+    /// SECURITY: Challenge verification is CRITICAL to prevent proof forgery.
+    /// Without it, an attacker can choose arbitrary challenges, compute fake paths,
+    /// and pass verification.
     pub fn verify(&self, claimed_sum: u32, transcript: &[u32]) -> bool {
         let n = self.num_vars;
 
@@ -393,33 +401,37 @@ impl SumcheckProof {
         }
 
         // Check 7: Verify challenges are derived from transcript correctly
-        // For precomputed challenges (when transcript is provided), verify against transcript
-        // For Fiat-Shamir challenges (derived from commitments), verify using commitment accumulator
+        // CRITICAL SECURITY CHECK: This binds challenges to commitments
+        // If this is skipped, an attacker can choose arbitrary challenges and forge proofs
+        //
+        // The prove() function uses: commitment_accumulator = Hash(challenge_i, commitment_accumulator)
+        // To verify, we reconstruct the accumulator chain and check challenges match
+        let mut reconstructed_accumulator = claimed_sum;
         for i in 0..n {
+            // Compute expected challenge from reconstructed accumulator
             let challenge_base = if i < transcript.len() {
                 transcript[i]
             } else {
-                // For precomputed challenges without transcript, we need to reconstruct
-                // the same accumulator state that was used in prove()
-                // However, this is complex because we don't store the accumulator state
-                // For now, skip challenge verification when no transcript is provided
-                // This is acceptable for constant polynomials where challenge values don't affect correctness
-                continue;
+                reconstructed_accumulator
             };
-
             let expected_challenge = (challenge_base % (Q as u32 - 1)).wrapping_add(1);
+
+            // Verify challenge matches
             if self.challenges[i] != expected_challenge {
-                // For precomputed challenges, verify directly against transcript
+                // If transcript provided, verify against transcript
                 if i < transcript.len() && transcript[i] != 0 {
-                    let expected = (transcript[i] % (Q as u32 - 1)).wrapping_add(1);
-                    if self.challenges[i] != expected {
+                    let expected_from_transcript = (transcript[i] % (Q as u32 - 1)).wrapping_add(1);
+                    if self.challenges[i] != expected_from_transcript {
                         return false;
                     }
                 } else {
-                    // When no transcript available, skip challenge verification
-                    // This is safe for constant polynomial proofs
+                    // No transcript and challenge doesn't match accumulator - REJECT
+                    return false;
                 }
             }
+
+            // Update accumulator for next round (this must match prove() exactly)
+            reconstructed_accumulator = Poseidon2::hash_pair(self.challenges[i], reconstructed_accumulator);
         }
 
         // Check 8: Verify Merkle authentication paths
@@ -542,24 +554,15 @@ impl MultilinearPCS {
     /// Prove sumcheck claim: Σ_{x∈{0,1}^n} f(x) = claimed_sum
     /// Returns (commitment, challenges, final_sum)
     fn prove_sumcheck(&self, poly: &MultilinearPolynomial, _point: &[u32]) -> (u32, Vec<u32>, u32) {
-        // Simplified sumcheck: just commit to the polynomial evaluation
-        // Full implementation would chain sumcheck rounds
-
-        // Hash the polynomial to create a commitment
-        let mut comm = 0u32;
-        for eval in &poly.evaluations {
-            comm = Poseidon2::hash_pair(comm, *eval % Q as u32);
+        // Handle degenerate case: 0 variables means single point
+        if poly.num_vars == 0 {
+            let val = poly.evaluations.first().copied().unwrap_or(0);
+            return (val, vec![], val);
         }
-
-        // Generate challenges (simplified - would use Fiat-Shamir)
-        let challenges: Vec<u32> = (0..self.num_vars)
-            .map(|i| ((comm as u64 + i as u64) % Q as u64) as u32)
-            .collect();
-
-        // Final sum is the evaluation at the point (simplified)
-        let final_sum = poly.evaluate(_point);
-
-        (comm, challenges, final_sum)
+        // Compute claimed_sum as sum of all evaluations over Boolean hypercube
+        let claimed_sum = poly.evaluations.iter().fold(0u64, |acc, &e| (acc + e as u64) % Q as u64) as u32;
+        let proof = SumcheckProof::prove(poly, claimed_sum, &mut Vec::new());
+        (proof.claims[0], proof.challenges, proof.final_evals[0])
     }
 
     /// Verify opening proof
