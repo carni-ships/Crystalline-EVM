@@ -64,6 +64,25 @@ Our system uses **lattice-based cryptography** instead of traditional elliptic c
 
 Lattices are **post-quantum secure**—they can't be broken by Shor's algorithm.
 
+### Important Clarification: "Folding" in Our System
+
+Traditional Nova/Supernova folding uses **elliptic curve group operations** for commitments. Our implementation uses **field arithmetic + Poseidon2 hashing** instead:
+
+```rust
+// Traditional Nova (ECC-based):
+comm_w_new = g^(r * log_g(comm_w_old) + log_g(comm_w_cccs))
+
+// Our "Nova" (field-based):
+comm_w_new = r * comm_w_old + comm_w_cccs  // Plain field arithmetic
+```
+
+This is **not** traditional Nova—it's a lattice-friendly approximation that:
+- Uses the **structure** of Nova (sequential IVC, folding challenges)
+- But replaces ECC with field operations over GF(Q) where Q=8383489 (prime)
+- Is post-quantum because Poseidon2 is hash-based, not discrete-log based
+
+The ePrint paper "SuperNova" (2024/1563) explores different algebraic settings for folding. We use field arithmetic because it's hardware-accelerated via ANE.
+
 ---
 
 ## Step-by-Step: How a Proof Gets Made
@@ -244,6 +263,18 @@ AIRConstraint {
 
 If any constraint ≠ 0, the proof fails.
 
+### 4. Security Caveats
+
+Our system uses a **prime modulus** Q=8383489 (23 bits), which avoids known vulnerabilities in some lattice-based systems:
+
+| Issue | LaBRADOR | Our System |
+|-------|----------|------------|
+| Power-of-2 modulus | q=2^32 has zero divisors | Q=8383489 is prime ✅ |
+| Composite moduli | KoalaBear×BabyBear | Q is prime ✅ |
+| NTT soundness | Ring splitting bugs | We don't use NTT ✅ |
+
+We use **Poseidon2 hashing** instead of NTT-based commitments, so we're not affected by the LaBRADOR soundness bugs (zkSecurity blog, 2024).
+
 ---
 
 ## Why Is Proof Size Constant?
@@ -287,10 +318,12 @@ Total: ~132 bytes regardless of N!
 
 | zkEVM | Proof Size | Proving Time | Privacy | Post-Quantum |
 |--------|------------|--------------|---------|-------------|
-| ** ours (NovaIVC)** | ~132 bytes | ~200ms | Partial | ✅ Yes |
+| ** ours (field-based Nova)** | ~132-448 bytes | ~150ms | Partial | ✅ Yes |
 | Polygon zkEVM | ~45 KB | ~2 min | Partial | ❌ No |
 | StarkNet | ~45 KB | ~3 min | Full | ✅ Yes |
 | zkSync | ~500 bytes | ~30 sec | Partial | ❌ No |
+
+> **Note**: Our "Nova" uses field arithmetic, not ECC. It's post-quantum but with different security parameters than traditional Nova.
 
 ### Why Are We Smaller?
 
