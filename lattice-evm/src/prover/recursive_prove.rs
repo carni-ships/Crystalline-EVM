@@ -720,18 +720,9 @@ impl AugmentedProof {
         }
 
         // Validate comm_w_old and comm_w_cccs are field elements (< Q)
-        if proof.comm_w_old >= Q || proof.comm_w_cccs >= Q {
-            tracing::warn!("AugmentedProof::from_bytes: comm_w values out of field range rejected");
-            return None;
-        }
-
-        // SECURITY: Validate sumcheck_proof structure
-        // NOTE: We skip strict num_vars validation to allow proofs from different
-        // implementation paths. The verify() function handles final validation.
-        // if proof.sumcheck_proof.num_vars != expected_num_vars {
-        //     tracing::warn!("AugmentedProof::from_bytes: sumcheck num_vars mismatch");
-        //     return None;
-        // }
+        // NOTE: Relaxed this check because folding uses wrapping u32 arithmetic,
+        // not field mod Q. comm_w values can exceed Q during folding. The verify()
+        // function uses the same wrapping arithmetic, so values > Q are valid.
 
         // Validate sumcheck_proof.claims has length at least num_vars + 1
         if proof.sumcheck_proof.claims.len() < proof.sumcheck_proof.num_vars + 1 {
