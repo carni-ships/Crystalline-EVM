@@ -694,8 +694,52 @@ impl AugmentedProof {
     }
 
     /// Deserialize augmented proof from bytes
+    ///
+    /// SECURITY: This is a critical deserialization point.
+    /// We MUST validate the deserialized fields BEFORE using them in verification.
+    /// An attacker could craft malicious bytes that deserialize successfully but
+    /// contain invalid values (e.g., r=0, r=1, or field overflow).
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        bincode::deserialize(bytes).ok()
+        let proof: AugmentedProof = bincode::deserialize(bytes).ok()?;
+
+        // SECURITY: Validate deserialized fields immediately after deserialization
+        // This prevents a class of attacks where malicious bytes deserialize
+        // to values that would fail verification if checked before deserialization.
+        const Q: u32 = 8383489;
+
+        // Validate r is in safe range (not 0, 1, or >= Q)
+        if proof.r == 0 || proof.r == 1 || proof.r >= Q {
+            tracing::warn!("AugmentedProof::from_bytes: invalid r={} rejected", proof.r);
+            return None;
+        }
+
+        // Validate n (number of elements) is reasonable
+        if proof.n == 0 || proof.n > 10000 {
+            tracing::warn!("AugmentedProof::from_bytes: invalid n={} rejected", proof.n);
+            return None;
+        }
+
+        // Validate comm_w_old and comm_w_cccs are field elements (< Q)
+        if proof.comm_w_old >= Q || proof.comm_w_cccs >= Q {
+            tracing::warn!("AugmentedProof::from_bytes: comm_w values out of field range rejected");
+            return None;
+        }
+
+        // SECURITY: Validate sumcheck_proof structure
+        // NOTE: We skip strict num_vars validation to allow proofs from different
+        // implementation paths. The verify() function handles final validation.
+        // if proof.sumcheck_proof.num_vars != expected_num_vars {
+        //     tracing::warn!("AugmentedProof::from_bytes: sumcheck num_vars mismatch");
+        //     return None;
+        // }
+
+        // Validate sumcheck_proof.claims has length at least num_vars + 1
+        if proof.sumcheck_proof.claims.len() < proof.sumcheck_proof.num_vars + 1 {
+            tracing::warn!("AugmentedProof::from_bytes: claims too short rejected");
+            return None;
+        }
+
+        Some(proof)
     }
 }
 
@@ -2004,8 +2048,64 @@ impl AugmentedProofSuperNeo {
     }
 
     /// Deserialize from bytes
+    ///
+    /// SECURITY: This is a critical deserialization point.
+    /// We MUST validate the deserialized fields BEFORE using them in verification.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        bincode::deserialize(bytes).ok()
+        let proof: AugmentedProofSuperNeo = bincode::deserialize(bytes).ok()?;
+
+        // SECURITY: Validate deserialized fields immediately after deserialization
+        const Q: u32 = 8383489;
+
+        // Validate r_primary is in safe range
+        if proof.r_primary == 0 || proof.r_primary == 1 || proof.r_primary >= Q {
+            tracing::warn!("AugmentedProofSuperNeo::from_bytes: invalid r_primary={} rejected", proof.r_primary);
+            return None;
+        }
+
+        // Validate all r_multi values
+        for (i, &r) in proof.r_multi.iter().enumerate() {
+            if r == 0 || r == 1 || r >= Q {
+                tracing::warn!("AugmentedProofSuperNeo::from_bytes: invalid r_multi[{}]={} rejected", i, r);
+                return None;
+            }
+        }
+
+        // Validate n (number of elements) is reasonable
+        if proof.n == 0 || proof.n > 10000 {
+            tracing::warn!("AugmentedProofSuperNeo::from_bytes: invalid n={} rejected", proof.n);
+            return None;
+        }
+
+        // Validate field values
+        if proof.comm_w_initial >= Q || proof.comm_w_cccs_list.iter().any(|&v| v >= Q) {
+            tracing::warn!("AugmentedProofSuperNeo::from_bytes: comm_w values out of field range rejected");
+            return None;
+        }
+
+        // Validate list lengths: r_primary is first, r_multi has n-1 remaining
+        // Total challenges = 1 + (n-1) = n
+        if proof.r_multi.len() != proof.n.saturating_sub(1) {
+            tracing::warn!("AugmentedProofSuperNeo::from_bytes: r_multi len {} != n-1 ({}) rejected",
+                proof.r_multi.len(), proof.n.saturating_sub(1));
+            return None;
+        }
+
+        if proof.comm_w_cccs_list.len() != proof.n {
+            tracing::warn!("AugmentedProofSuperNeo::from_bytes: ccs_list len {} != n ({}) rejected",
+                proof.comm_w_cccs_list.len(), proof.n);
+            return None;
+        }
+
+        // SECURITY: Validate sumcheck_proof has correct structure
+        // NOTE: We skip strict num_vars validation to allow proofs from different
+        // implementation paths. The verify_multi() function handles final validation.
+        // if proof.sumcheck_proof.num_vars != expected_num_vars {
+        //     tracing::warn!("AugmentedProofSuperNeo::from_bytes: sumcheck num_vars mismatch");
+        //     return None;
+        // }
+
+        Some(proof)
     }
 }
 
