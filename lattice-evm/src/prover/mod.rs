@@ -596,18 +596,11 @@ impl EVMAggregatedProof {
     }
 }
 
-/// Generate seed for key generation
+/// Generate a cryptographically secure random seed for key generation
+/// Uses OS-provided entropy for security against timing attacks
 pub fn generate_seed() -> [u8; 32] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos() as u64;
-
     let mut seed = [0u8; 32];
-    for (i, byte) in seed.iter_mut().enumerate() {
-        *byte = ((nanos >> (i % 8)) & 0xFF) as u8;
-    }
+    getrandom::getrandom(&mut seed).expect("Failed to get random bytes from OS");
     seed
 }
 

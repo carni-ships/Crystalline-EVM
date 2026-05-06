@@ -621,7 +621,7 @@ impl AugmentedProof {
         let poly = MultilinearPolynomial::from_evals(num_vars, evals).unwrap();
 
         // Claimed sum is constraint_val * 2^num_vars
-        let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
+        let claimed_sum = constraint_val.wrapping_mul((1u64 << num_vars) as u32);
 
         // Transcript includes the folding inputs for Fiat-Shamir
         let transcript = &[r, comm_w_old, comm_w_cccs, comm_w_new];
@@ -651,7 +651,7 @@ impl AugmentedProof {
             .wrapping_sub(self.comm_w_cccs);
 
         // Claimed sum
-        let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
+        let claimed_sum = constraint_val.wrapping_mul((1u64 << num_vars) as u32);
 
         // Transcript used during proving: [r, comm_w_old, comm_w_cccs, comm_w_new]
         let transcript = &[self.r, self.comm_w_old, self.comm_w_cccs, comm_w_new];
@@ -1828,7 +1828,7 @@ impl AugmentedProofSuperNeo {
         let poly = MultilinearPolynomial::from_evals(num_vars, evals).unwrap();
 
         // Claimed sum is constraint_val * 2^num_vars
-        let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
+        let claimed_sum = constraint_val.wrapping_mul((1u64 << num_vars) as u32);
 
         // Transcript includes all folding inputs
         let transcript: Vec<u32> = r_list.iter()
@@ -1863,7 +1863,7 @@ impl AugmentedProofSuperNeo {
         let constraint_val = comm_w_new.wrapping_sub(expected_comm_w);
 
         // Claimed sum
-        let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
+        let claimed_sum = constraint_val.wrapping_mul((1u64 << num_vars) as u32);
 
         // Transcript used during proving: r_list + c_list + [comm_w_new]
         let transcript: Vec<u32> = all_r.iter()
