@@ -65,6 +65,22 @@ impl RPCConfig {
         Self::public_node()
     }
 
+    /// Berachain public RPC endpoint
+    pub fn berachain() -> Self {
+        Self {
+            url: "https://rpc.berachain.com".to_string(),
+            timeout: Duration::from_secs(60),
+        }
+    }
+
+    /// Create RPC config from custom URL (for Berachain, custom chains, etc.)
+    pub fn from_url(url: &str) -> Self {
+        Self {
+            url: url.to_string(),
+            timeout: Duration::from_secs(60),
+        }
+    }
+
     /// All endpoints for fallback rotation
     pub fn all_endpoints() -> Vec<Self> {
         vec![
@@ -180,7 +196,7 @@ pub async fn fetch_block_with_fallback(block_number: u64) -> Result<EthereumBloc
 
     for config in RPCConfig::all_endpoints() {
         let client = EthClient::new(&config);
-        match client.get_block(&hex_number).await {
+        match client.get_block(&hex_number, true).await {
             Ok(block) => return Ok(block),
             Err(e) => {
                 tracing::warn!("Failed to fetch block from {}: {}", config.url, e);
@@ -215,14 +231,14 @@ impl EthereumBlock {
         let config = RPCConfig::default();
         let client = EthClient::new(&config);
         let hex_number = format!("0x{:x}", number);
-        client.get_block(&hex_number).await
+        client.get_block(&hex_number, true).await
     }
 
     /// Fetch block with specific RPC config
     pub async fn fetch_with(number: u64, config: &RPCConfig) -> Result<Self, String> {
         let client = EthClient::new(config);
         let hex_number = format!("0x{:x}", number);
-        client.get_block(&hex_number).await
+        client.get_block(&hex_number, true).await
     }
 }
 
@@ -269,8 +285,9 @@ impl EthereumTransaction {
 
 impl EthClient {
     /// Fetch a block by number (hex string)
-    pub async fn get_block(&self, block_number: &str) -> Result<EthereumBlock, String> {
-        self.call("eth_getBlockByNumber", &[serde_json::json!(block_number), serde_json::json!(true)]).await
+    /// Set include_txs=true to get full transaction objects instead of just hashes
+    pub async fn get_block(&self, block_number: &str, include_txs: bool) -> Result<EthereumBlock, String> {
+        self.call("eth_getBlockByNumber", &[serde_json::json!(block_number), serde_json::json!(include_txs)]).await
     }
 
     /// Get current block number
