@@ -1334,6 +1334,18 @@ pub fn verify_nova_proof(proof: &NovaIVCProof) -> bool {
         return false;
     }
 
+    // SECURITY: Cryptographically bind augmented proof r to folding_chain challenges
+    // The augmented proof's r must match the last challenge in the folding chain
+    // This prevents an attack where folding_chain is modified but augmented proof isn't
+    if !proof.folding_chain.challenges.is_empty() {
+        let last_challenge = proof.folding_chain.challenges[proof.folding_chain.challenges.len() - 1];
+        if augmented.r != last_challenge {
+            tracing::warn!("NovaIVC augmented proof: r mismatch ({} vs last challenge {})",
+                augmented.r, last_challenge);
+            return false;
+        }
+    }
+
     // SECURITY: Also verify running.n matches (defense in depth)
     if proof.running.n != proof.folding_chain.num_folds {
         tracing::warn!("NovaIVC running.n mismatch ({} vs {})",
@@ -2645,5 +2657,234 @@ mod tests {
 
         let result = compute_expected_comm_w(&r_list, comm_w_initial, &c_list);
         assert_eq!(result, 331u32, "Sequential folding should give 331");
+    }
+
+    #[test]
+    fn test_security_attack_tamper_challenge_r() {
+        // Attack: Change challenge r in augmented proof after serialization
+        use crate::prover::parallel_prove::BatchProof;
+
+        let initial_state = Poseidon2::hash_pair(12345, 67890);
+        let block_hash = [1u8; 32];
+        let n_proofs = 3;
+
+        // Create dummy Labrador proofs (proof field is not used in folding, only commitment)
+        let labrador_proofs: Vec<BatchProof> = (0..n_proofs).map(|i| {
+            BatchProof {
+                batch_id: i,
+                proof: orion_sys::LatticeZKProof {
+                    commitment: [i as u8 + 1; 32],
+                    challenge: [0u8; 32],
+                    response: [0u64; 4],
+                },
+                commitment: [(i as u8 + 1), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                            17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+                elements: vec![i as u32 * 100; 16],
+            }
+        }).collect();
+
+        let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
+        let nova_prover = NovaIVCProver::new(4);
+
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+            .expect("Should create valid proof");
+
+        let mut bytes = proof.augmented_proof.clone();
+
+        if let Some(mut aug) = AugmentedProof::from_bytes(&bytes) {
+            let original_r = aug.r;
+            // Change r to something else
+            aug.r = ((original_r as u64 + 12345) % 8383489) as u32;
+            let tampered_bytes = aug.to_bytes();
+
+            let mut tampered = proof.clone();
+            tampered.augmented_proof = tampered_bytes;
+
+            let result = verify_nova_proof(&tampered);
+            // Tampering with r should cause verification to FAIL
+            assert!(!result, "Tampering with r should be detected");
+            println!("Attack test: Tampered r={}, original r={} -> BLOCKED", aug.r, original_r);
+        }
+    }
+
+    #[test]
+    fn test_security_attack_tamper_n() {
+        // Attack: Change n (number of folds) in augmented proof
+        use crate::prover::parallel_prove::BatchProof;
+
+        let initial_state = Poseidon2::hash_pair(99999, 88888);
+        let block_hash = [2u8; 32];
+        let n_proofs = 2;
+
+        let labrador_proofs: Vec<BatchProof> = (0..n_proofs).map(|i| {
+            BatchProof {
+                batch_id: i,
+                proof: orion_sys::LatticeZKProof {
+                    commitment: [i as u8 + 10; 32],
+                    challenge: [0u8; 32],
+                    response: [0u64; 4],
+                },
+                commitment: [(i as u8 + 10), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                            17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+                elements: vec![i as u32 * 200; 16],
+            }
+        }).collect();
+
+        let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
+        let nova_prover = NovaIVCProver::new(4);
+
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+            .expect("Should create valid proof");
+
+        let mut bytes = proof.augmented_proof.clone();
+
+        if let Some(mut aug) = AugmentedProof::from_bytes(&bytes) {
+            let original_n = aug.n;
+            // Change n to something completely different
+            aug.n = 999;
+            let tampered_bytes = aug.to_bytes();
+
+            let mut tampered = proof.clone();
+            tampered.augmented_proof = tampered_bytes;
+
+            let result = verify_nova_proof(&tampered);
+            // Tampering with n should cause verification to FAIL (n mismatch)
+            assert!(!result, "Tampering with n should be detected");
+            println!("Attack test: Tampered n=999, original n={} -> BLOCKED", original_n);
+        }
+    }
+
+    #[test]
+    fn test_security_attack_folding_chain_tamper() {
+        // Attack: Change challenge in folding chain after creation
+        use crate::prover::parallel_prove::BatchProof;
+
+        let initial_state = Poseidon2::hash_pair(55555, 66666);
+        let block_hash = [3u8; 32];
+        let n_proofs = 2;
+
+        let labrador_proofs: Vec<BatchProof> = (0..n_proofs).map(|i| {
+            BatchProof {
+                batch_id: i,
+                proof: orion_sys::LatticeZKProof {
+                    commitment: [i as u8 + 20; 32],
+                    challenge: [0u8; 32],
+                    response: [0u64; 4],
+                },
+                commitment: [(i as u8 + 20), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                            17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+                elements: vec![i as u32 * 300; 16],
+            }
+        }).collect();
+
+        let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
+        let nova_prover = NovaIVCProver::new(4);
+
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+            .expect("Should create valid proof");
+
+        let mut tampered = proof.clone();
+        // Change the LAST challenge in the folding chain (this is what the augmented proof's r is bound to)
+        if !tampered.folding_chain.challenges.is_empty() {
+            let last_idx = tampered.folding_chain.challenges.len() - 1;
+            let original_r = tampered.folding_chain.challenges[last_idx];
+            tampered.folding_chain.challenges[last_idx] = 99999;
+
+            let result = verify_nova_proof(&tampered);
+            // Tampering with folding chain should cause verification to FAIL
+            assert!(!result, "Tampering with folding chain should be detected");
+            println!("Attack test: Tampered challenge[{}]={}, original={} -> BLOCKED", last_idx, 99999, original_r);
+        }
+    }
+
+    #[test]
+    fn test_security_attack_empty_augmented_proof() {
+        // Attack: Replace augmented proof with empty bytes
+        use crate::prover::parallel_prove::BatchProof;
+
+        let initial_state = Poseidon2::hash_pair(11111, 22222);
+        let block_hash = [4u8; 32];
+        let n_proofs = 1;
+
+        let labrador_proofs: Vec<BatchProof> = vec![
+            BatchProof {
+                batch_id: 0,
+                proof: orion_sys::LatticeZKProof {
+                    commitment: [1u8; 32],
+                    challenge: [0u8; 32],
+                    response: [0u64; 4],
+                },
+                commitment: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                            17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+                elements: vec![100; 16],
+            }
+        ];
+
+        let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
+        let nova_prover = NovaIVCProver::new(4);
+
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+            .expect("Should create valid proof");
+
+        let mut tampered = proof.clone();
+        tampered.augmented_proof = vec![]; // Empty augmented proof
+
+        let result = verify_nova_proof(&tampered);
+        // Empty augmented proof should be rejected
+        assert!(!result, "Empty augmented proof should be rejected");
+        println!("Attack test: Empty augmented proof -> BLOCKED");
+    }
+
+    #[test]
+    fn test_security_attack_bincode_tamper() {
+        // Attack: Flip bits in serialized proof bytes
+        use crate::prover::parallel_prove::BatchProof;
+
+        let initial_state = Poseidon2::hash_pair(77777, 88888);
+        let block_hash = [5u8; 32];
+        let n_proofs = 1;
+
+        let labrador_proofs: Vec<BatchProof> = vec![
+            BatchProof {
+                batch_id: 0,
+                proof: orion_sys::LatticeZKProof {
+                    commitment: [10u8; 32],
+                    challenge: [0u8; 32],
+                    response: [0u64; 4],
+                },
+                commitment: [10, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                            17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+                elements: vec![500; 16],
+            }
+        ];
+
+        let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
+        let nova_prover = NovaIVCProver::new(4);
+
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+            .expect("Should create valid proof");
+
+        // Serialize and flip bits
+        let bytes = bincode::serialize(&proof).expect("Should serialize");
+        let mut tampered_bytes = bytes.clone();
+
+        // Flip a bit in the middle
+        if tampered_bytes.len() > 50 {
+            tampered_bytes[50] ^= 0x01;
+        }
+
+        let tampered: Result<NovaIVCProof, _> = bincode::deserialize(&tampered_bytes);
+        match tampered {
+            Ok(p) => {
+                let result = verify_nova_proof(&p);
+                // Bit-flipped data should cause verification to FAIL
+                assert!(!result, "Bit-flip attack should be detected");
+                println!("Attack test: Bit-flipped serialized data -> BLOCKED");
+            }
+            Err(_) => {
+                // Bincode deserialization itself may fail (acceptable)
+                println!("Attack test: Bit-flipped data failed deserialization -> BLOCKED at deserialization");
+            }
+        }
     }
 }
