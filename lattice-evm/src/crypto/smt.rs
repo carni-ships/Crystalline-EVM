@@ -88,41 +88,62 @@ impl SparseMerkleTree {
         self.compute_root()
     }
 
-    /// Compute root from current leaves (full rebuild, but cached result)
+    /// Compute root from current leaves (full rebuild, no caching issues)
+    ///
+    /// SECURITY: Uses full rebuild to avoid dirty-tracking bugs that cause
+    /// incorrect proof verification. Performance is acceptable since this is
+    /// only called when cached_root is None (after insertions).
     fn compute_root(&self) -> u32 {
+        if self.leaves.is_empty() {
+            return self.empty_hash_at_depth(self.depth);
+        }
+
         let mut current: HashMap<u32, u32> = self.leaves.clone();
         let mut level = 0;
 
         while level < self.depth {
             let mut next: HashMap<u32, u32> = HashMap::new();
 
-            // Iterate through all slots at this level
-            let slots: Vec<u32> = current.keys().copied().collect();
+            // Collect all slots at this level
+            let mut slots: Vec<u32> = current.keys().copied().collect();
+            slots.sort_unstable();  // Ensure deterministic order
+
+            // Group slots by parent
+            let mut slots_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
             for &slot in &slots {
-                // Compute sibling position
-                let sibling = slot ^ 1;
-
-                // Get or compute hash for current slot
-                let current_hash = current[&slot];
-
-                // Get or compute hash for sibling
-                let sibling_hash = current.get(&sibling).copied()
-                    .unwrap_or_else(|| self.empty_hash_at_depth(level));
-
-                // Parent is at half the slot index
                 let parent = slot >> 1;
+                slots_by_parent.entry(parent).or_insert_with(Vec::new).push(slot);
+            }
 
-                // Hash this pair (order matters for Poseidon2)
-                let (left, right) = if slot & 1 == 0 {
-                    (current_hash, sibling_hash)
+            // Process each parent - compute hash from its children
+            for (&parent, children) in &slots_by_parent {
+                // Sort children to ensure [even, odd] order
+                let mut sorted_children = children.clone();
+                sorted_children.sort_unstable();
+
+                // Check which children exist
+                let even_slot = parent << 1;
+                let odd_slot = even_slot | 1;
+                let has_even = sorted_children.contains(&even_slot);
+                let has_odd = sorted_children.contains(&odd_slot);
+
+                let (left_hash, right_hash) = if has_even && has_odd {
+                    // Both children exist - hash them together
+                    (current[&even_slot], current[&odd_slot])
+                } else if has_even {
+                    // Only even child - hash with empty
+                    let empty_hash = self.empty_hash_at_depth(level);
+                    (current[&even_slot], empty_hash)
+                } else if has_odd {
+                    // Only odd child - hash with empty
+                    let empty_hash = self.empty_hash_at_depth(level);
+                    (empty_hash, current[&odd_slot])
                 } else {
-                    (sibling_hash, current_hash)
+                    continue;
                 };
 
-                let parent_hash = Poseidon2::hash_pair(left, right);
-
-                // Insert parent if not already present
-                next.entry(parent).or_insert(parent_hash);
+                let parent_hash = Poseidon2::hash_pair(left_hash, right_hash);
+                next.insert(parent, parent_hash);
             }
 
             current = next;
@@ -133,25 +154,99 @@ impl SparseMerkleTree {
     }
 
     /// Generate a Merkle proof for a slot
+    ///
+    /// SECURITY FIX: Now correctly computes sibling hashes at each level using
+    /// precomputed level data, matching how compute_root() builds the tree.
+    /// Previously used raw leaf hashes for all levels, causing verification
+    /// to fail when internal nodes had different hashes than leaves.
     pub fn proof(&self, slot: u32) -> Option<SMTProof> {
-        let value_hash = self.leaves.get(&slot).copied();
+        if self.leaves.is_empty() {
+            return Some(SMTProof {
+                slot,
+                value_hash: None,
+                proof_hashes: vec![EMPTY_HASH; self.depth],
+                root: self.empty_hash_at_depth(self.depth),
+            });
+        }
 
+        // Precompute all level hashes (like compute_root does)
+        // levels[level] = HashMap<slot, hash> at that level
+        let mut levels: Vec<HashMap<u32, u32>> = Vec::with_capacity(self.depth);
+        levels.push(self.leaves.clone());  // Level 0 = leaves
+
+        for level in 0..self.depth {
+            let current = &levels[level];
+            if current.is_empty() {
+                // No more nodes, all remaining levels are empty
+                for _ in level..self.depth {
+                    levels.push(HashMap::new());
+                }
+                break;
+            }
+
+            let mut next: HashMap<u32, u32> = HashMap::new();
+
+            // Group slots by parent
+            let mut slots_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+            for &slot in current.keys() {
+                let parent = slot >> 1;
+                slots_by_parent.entry(parent).or_insert_with(Vec::new).push(slot);
+            }
+
+            // Compute parent hashes
+            for (&parent, children) in &slots_by_parent {
+                let mut sorted_children = children.clone();
+                sorted_children.sort_unstable();
+
+                let even_slot = parent << 1;
+                let odd_slot = even_slot | 1;
+                let has_even = sorted_children.contains(&even_slot);
+                let has_odd = sorted_children.contains(&odd_slot);
+
+                let (left_hash, right_hash) = if has_even && has_odd {
+                    (current[&even_slot], current[&odd_slot])
+                } else if has_even {
+                    let empty_hash = self.empty_hash_at_depth(level);
+                    (current[&even_slot], empty_hash)
+                } else if has_odd {
+                    let empty_hash = self.empty_hash_at_depth(level);
+                    (empty_hash, current[&odd_slot])
+                } else {
+                    continue;
+                };
+
+                let parent_hash = Poseidon2::hash_pair(left_hash, right_hash);
+                next.insert(parent, parent_hash);
+            }
+
+            levels.push(next);
+        }
+
+        // Build proof using precomputed levels
+        let value_hash = self.leaves.get(&slot).copied();
         let mut proof_hashes = Vec::with_capacity(self.depth);
         let mut current_slot = slot;
-        let mut level = 0;
 
-        // Walk up the tree collecting sibling hashes
-        while level < self.depth {
+        for level in 0..self.depth {
+            // Sibling slot at this level
             let sibling_slot = current_slot ^ 1;
 
-            // Get sibling hash from current leaves or compute empty
-            let sibling_hash = self.leaves.get(&sibling_slot).copied()
-                .unwrap_or_else(|| self.empty_hash_at_depth(level));
+            // Get sibling hash from the computed level, not raw leaves
+            // levels[level] has the hashes at that level (level 0 = leaves)
+            // At level 0, sibling hash comes from leaves directly if sibling exists
+            // At higher levels, sibling hash comes from internal nodes computed at that level
+            let sibling_hash = if level < levels.len() {
+                let level_hashes = &levels[level];
+                // If sibling exists at this level, use its computed hash
+                // Otherwise use empty hash for this level
+                level_hashes.get(&sibling_slot).copied()
+                    .unwrap_or_else(|| self.empty_hash_at_depth(level))
+            } else {
+                self.empty_hash_at_depth(level)
+            };
 
             proof_hashes.push(sibling_hash);
-
             current_slot >>= 1;
-            level += 1;
         }
 
         Some(SMTProof {
