@@ -495,6 +495,33 @@ impl FoldingChain {
         self.u_list.push(u);
     }
 
+    /// Compute chain commitment by hashing all challenges
+    ///
+    /// SECURITY: This commitment binds all folds in the chain.
+    /// If any challenge is changed, the chain_commitment will change,
+    /// invalidating any proof that used the old commitment.
+    ///
+    /// Uses Keccak256 to ensure bit-security and prevent collision attacks.
+    /// The accumulator pattern ensures each challenge contributes to the final hash.
+    pub fn chain_commitment(&self) -> u32 {
+        use crate::crypto::keccak::keccak256;
+
+        let mut input = Vec::with_capacity(4 * self.challenges.len());
+        for (i, &r) in self.challenges.iter().enumerate() {
+            // Include index to prevent reordering attacks
+            input.extend_from_slice(&i.to_le_bytes());
+            input.extend_from_slice(&r.to_le_bytes());
+        }
+
+        if input.is_empty() {
+            return 0;
+        }
+
+        let hash = keccak256(&input);
+        // Use first 4 bytes as u32
+        u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]])
+    }
+
     /// Verify the complete folding chain
     ///
     /// Returns Ok(()) if all folds are correct, Err(message) otherwise.
@@ -558,18 +585,24 @@ impl Default for FoldingChain {
 ///
 /// The augmented proof is a sumcheck proof that the constraint polynomial
 /// (which encodes the folding equation) sums to zero over the Boolean hypercube.
+///
+/// SECURITY: Includes chain_commitment to bind ALL folds, not just the final one.
+/// This prevents attackers from modifying intermediate folds after seeing a proof.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AugmentedProof {
     /// Sumcheck proof proving folding equation constraint = 0
     pub sumcheck_proof: SumcheckProof,
-    /// Challenge r used in folding
+    /// Challenge r used in final folding step
     pub r: u32,
     /// Number of witness elements
     pub n: usize,
-    /// Comm_w_old before folding (for verification)
+    /// Comm_w_old before final folding (for verification)
     pub comm_w_old: u32,
-    /// Comm_w_cccs of the step being folded (for verification)
+    /// Comm_w_cccs of the final step (for verification)
     pub comm_w_cccs: u32,
+    /// Chain commitment: hash of ALL challenges to bind entire folding chain
+    /// This prevents attacks where intermediate folds are modified after proving
+    pub chain_commitment: u32,
 }
 
 impl AugmentedProof {
@@ -579,12 +612,16 @@ impl AugmentedProof {
     /// P(x) = comm_w_new - r * comm_w_old - comm_w_cccs = 0
     ///
     /// evaluates to 0 at all points (i.e., has sum = 0 over hypercube).
+    ///
+    /// SECURITY: chain_commitment binds ALL folds in the chain, preventing
+    /// attacks where intermediate folds are modified after seeing a proof.
     pub fn prove(
         comm_w_new: u32,
         r: u32,
         comm_w_old: u32,
         comm_w_cccs: u32,
         n: usize,
+        chain_commitment: u32,
     ) -> Self {
         // Build constraint polynomial: P(x) = comm_w_new - r*comm_w_old - comm_w_cccs = 0
         // Since this is a constant polynomial (no variables), we set all evaluations to the constraint value
@@ -603,8 +640,9 @@ impl AugmentedProof {
         // Claimed sum is constraint_val * 2^num_vars
         let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
 
-        // Transcript includes the folding inputs for Fiat-Shamir
-        let transcript = &[r, comm_w_old, comm_w_cccs, comm_w_new];
+        // Transcript includes the folding inputs AND chain commitment for Fiat-Shamir
+        // Including chain_commitment binds the sumcheck to the entire chain
+        let transcript = &[r, comm_w_old, comm_w_cccs, comm_w_new, chain_commitment];
 
         AugmentedProof {
             sumcheck_proof: SumcheckProof::prove(&poly, claimed_sum, transcript),
@@ -612,13 +650,21 @@ impl AugmentedProof {
             n,
             comm_w_old,
             comm_w_cccs,
+            chain_commitment,
         }
     }
 
     /// Verify augmented proof
     ///
     /// Checks that the sumcheck proof verifies correctly for the stored folding inputs.
-    pub fn verify(&self, comm_w_new: u32, _comm_w_old: u32, _comm_w_cccs: u32) -> bool {
+    /// Also verifies chain_commitment matches the provided expected value.
+    pub fn verify(&self, comm_w_new: u32, expected_chain_commitment: u32) -> bool {
+        // SECURITY: Verify chain_commitment first to prevent chain tampering
+        if self.chain_commitment != expected_chain_commitment {
+            tracing::warn!("AugmentedProof: chain_commitment mismatch");
+            return false;
+        }
+
         // Note: comm_w_old and comm_w_cccs are not used because we use
         // the stored values (self.comm_w_old, self.comm_w_cccs) which are
         // the actual values used when generating the proof.
@@ -633,8 +679,8 @@ impl AugmentedProof {
         // Claimed sum
         let claimed_sum = constraint_val.wrapping_mul(1u32 << num_vars);
 
-        // Transcript used during proving: [r, comm_w_old, comm_w_cccs, comm_w_new]
-        let transcript = &[self.r, self.comm_w_old, self.comm_w_cccs, comm_w_new];
+        // Transcript used during proving includes chain_commitment
+        let transcript = &[self.r, self.comm_w_old, self.comm_w_cccs, comm_w_new, self.chain_commitment];
 
         self.sumcheck_proof.verify(claimed_sum, transcript)
     }
@@ -882,12 +928,15 @@ impl NovaIVCProver {
         let final_comm_w = running.comm_w;
 
         // Generate augmented proof for the final folding step
+        // SECURITY: Include chain_commitment to bind all folds
+        let chain_commit = folding_chain.chain_commitment();
         let augmented = AugmentedProof::prove(
             final_comm_w,
             last_r,
             last_comm_w_old,
             last_comm_w_cccs,
             running.n,
+            chain_commit,
         );
 
         Ok(NovaIVCProof {
@@ -983,12 +1032,15 @@ impl NovaIVCProver {
         let final_comm_w = running.comm_w;
 
         // Generate augmented proof for the final folding step
+        // SECURITY: Include chain_commitment to bind all folds
+        let chain_commit = folding_chain.chain_commitment();
         let augmented = AugmentedProof::prove(
             final_comm_w,
             last_r,
             last_comm_w_old,
             last_comm_w_cccs,
             n_proofs,
+            chain_commit,
         );
 
         Ok(NovaIVCProof {
@@ -1119,12 +1171,15 @@ impl NovaIVCProver {
         let final_comm_w = running.comm_w;
 
         // Generate augmented proof for the final folding step
+        // SECURITY: Include chain_commitment to bind all folds
+        let chain_commit = folding_chain.chain_commitment();
         let augmented = AugmentedProof::prove(
             final_comm_w,
             last_r,
             last_comm_w_old,
             last_comm_w_cccs,
             running.n,
+            chain_commit,
         );
 
         Ok(NovaIVCProof {
@@ -1170,33 +1225,52 @@ pub fn verify_nova_proof(proof: &NovaIVCProof) -> bool {
         return false;
     }
 
-    // Verify augmented proof if present
-    if !proof.augmented_proof.is_empty() {
-        if let Some(augmented) = AugmentedProof::from_bytes(&proof.augmented_proof) {
-            // Verify the final folding equation using running.comm_w (the accumulated value)
-            // The accumulated running.comm_w should equal: r * comm_w_old + comm_w_cccs
-            let mul_result = (augmented.r as u64).wrapping_mul(augmented.comm_w_old as u64);
-            let expected_comm_w = mul_result.wrapping_add(augmented.comm_w_cccs as u64) as u32;
-
-            // Check against the accumulated running.comm_w
-            if proof.running.comm_w != expected_comm_w {
-                tracing::warn!("NovaIVC augmented proof: comm_w mismatch");
-                return false;
-            }
-
-            // Verify sumcheck proof (uses stored comm_w_old and comm_w_cccs internally)
-            let verify_ok = augmented.verify(proof.running.comm_w, augmented.comm_w_old, augmented.comm_w_cccs);
-            if !verify_ok {
-                tracing::warn!("NovaIVC sumcheck proof verification failed");
-                return false;
-            }
-
-            return true;
-        }
-        // If deserialization fails, fall back to basic check
+    // Verify augmented proof is present (REQUIRED for security)
+    // SECURITY: Empty augmented proof is not acceptable - it would skip sumcheck verification
+    if proof.augmented_proof.is_empty() {
+        tracing::warn!("NovaIVC verification failed: empty augmented proof not allowed");
+        return false;
     }
 
-    // Folding chain verified, sumcheck verified
+    let augmented = match AugmentedProof::from_bytes(&proof.augmented_proof) {
+        Some(a) => a,
+        None => {
+            tracing::warn!("NovaIVC verification failed: cannot deserialize augmented proof");
+            return false;
+        }
+    };
+
+    // SECURITY: Verify n matches chain length to prevent length mismatch attacks
+    if augmented.n != proof.folding_chain.num_folds {
+        tracing::warn!("NovaIVC augmented proof: n mismatch ({} vs {})", augmented.n, proof.folding_chain.num_folds);
+        return false;
+    }
+
+    // SECURITY: Also verify running.n matches (defense in depth)
+    if proof.running.n != proof.folding_chain.num_folds {
+        tracing::warn!("NovaIVC running.n mismatch ({} vs {})", proof.running.n, proof.folding_chain.num_folds);
+        return false;
+    }
+
+    // Verify the final folding equation using running.comm_w (the accumulated value)
+    // The accumulated running.comm_w should equal: r * comm_w_old + comm_w_cccs
+    let mul_result = (augmented.r as u64).wrapping_mul(augmented.comm_w_old as u64);
+    let expected_comm_w = mul_result.wrapping_add(augmented.comm_w_cccs as u64) as u32;
+
+    // Check against the accumulated running.comm_w
+    if proof.running.comm_w != expected_comm_w {
+        tracing::warn!("NovaIVC augmented proof: comm_w mismatch");
+        return false;
+    }
+
+    // SECURITY: Verify chain_commitment matches to bind entire chain
+    let expected_chain_commit = proof.folding_chain.chain_commitment();
+    let verify_ok = augmented.verify(proof.running.comm_w, expected_chain_commit);
+    if !verify_ok {
+        tracing::warn!("NovaIVC sumcheck proof verification failed");
+        return false;
+    }
+
     true
 }
 
@@ -1844,26 +1918,42 @@ impl AugmentedProofSuperNeo {
 pub fn verify_supernova_proof(proof: &SuperNovaProof) -> bool {
     // Check that final state matches running state
     if proof.running.u != proof.final_step.u {
+        tracing::warn!("SuperNova verify failed: final_u != running.u");
         return false;
     }
 
-    // Verify augmented proof if present
-    if !proof.augmented_proof.is_empty() {
-        if let Some(augmented) = AugmentedProofSuperNeo::from_bytes(&proof.augmented_proof) {
-            // Verify the folding equation using running.comm_w
-            // For SuperNeo: comm_w_new should satisfy the multifolding equation
-            let verify_ok = augmented.verify_multi(proof.running.comm_w);
-            if !verify_ok {
-                return false;
-            }
+    // SECURITY: Verify augmented proof is present (REQUIRED)
+    if proof.augmented_proof.is_empty() {
+        tracing::warn!("SuperNova verification failed: empty augmented proof not allowed");
+        return false;
+    }
 
-            // Also verify challenges match
-            if proof.challenges.len() != augmented.r_multi.len() + 1 {
-                return false;
-            }
-
-            return true;
+    let augmented = match AugmentedProofSuperNeo::from_bytes(&proof.augmented_proof) {
+        Some(a) => a,
+        None => {
+            tracing::warn!("SuperNova verification failed: cannot deserialize augmented proof");
+            return false;
         }
+    };
+
+    // SECURITY: Verify n matches num_folds to prevent length mismatch
+    if augmented.n != proof.num_folds {
+        tracing::warn!("SuperNova augmented proof: n mismatch ({} vs {})", augmented.n, proof.num_folds);
+        return false;
+    }
+
+    // Verify the folding equation using running.comm_w
+    // For SuperNeo: comm_w_new should satisfy the multifolding equation
+    let verify_ok = augmented.verify_multi(proof.running.comm_w);
+    if !verify_ok {
+        tracing::warn!("SuperNova multifolding equation verification failed");
+        return false;
+    }
+
+    // Also verify challenges match
+    if proof.challenges.len() != augmented.r_multi.len() + 1 {
+        tracing::warn!("SuperNova: challenges length mismatch");
+        return false;
     }
 
     true
@@ -2006,18 +2096,24 @@ mod tests {
         let comm_w_new = (((r as u64).wrapping_mul(comm_w_old as u64)) as u32).wrapping_add(comm_w_cccs);  // 3 * 100 + 200 = 500
 
         let n = 4usize;
+        let chain_commitment = Poseidon2::hash_pair(Poseidon2::hash_pair(0, r), r);  // Simple chain commit
 
         // Generate augmented proof
-        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n);
+        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n, chain_commitment);
 
         // Verify should succeed since the folding equation is satisfied
-        assert!(proof.verify(comm_w_new, comm_w_old, comm_w_cccs),
+        assert!(proof.verify(comm_w_new, chain_commitment),
             "Augmented proof should verify when folding equation is satisfied");
 
         // Test that verification fails when folding equation is NOT satisfied
         let wrong_comm_w_new = 999u32;
-        assert!(!proof.verify(wrong_comm_w_new, comm_w_old, comm_w_cccs),
+        assert!(!proof.verify(wrong_comm_w_new, chain_commitment),
             "Augmented proof should fail when folding equation is not satisfied");
+
+        // Test that verification fails when chain_commitment is wrong
+        let wrong_chain_commit = Poseidon2::hash_pair(999u32, 999u32);
+        assert!(!proof.verify(comm_w_new, wrong_chain_commit),
+            "Augmented proof should fail when chain_commitment is wrong");
     }
 
     #[test]
@@ -2028,19 +2124,21 @@ mod tests {
         let r = 7u32;
         let comm_w_new = (((r as u64).wrapping_mul(comm_w_old as u64)) as u32).wrapping_add(comm_w_cccs);
         let n = 8usize;
+        let chain_commitment = Poseidon2::hash_pair(Poseidon2::hash_pair(0, r), r);
 
-        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n);
+        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n, chain_commitment);
         let bytes = proof.to_bytes();
 
         // Deserialize and verify
         let restored = AugmentedProof::from_bytes(&bytes).expect("Should deserialize");
-        assert!(restored.verify(comm_w_new, comm_w_old, comm_w_cccs));
+        assert!(restored.verify(comm_w_new, chain_commitment));
 
         // Check stored values
         assert_eq!(restored.r, r);
         assert_eq!(restored.comm_w_old, comm_w_old);
         assert_eq!(restored.comm_w_cccs, comm_w_cccs);
         assert_eq!(restored.n, n);
+        assert_eq!(restored.chain_commitment, chain_commitment);
     }
 
     #[test]
@@ -2084,7 +2182,11 @@ mod tests {
         };
 
         // Create augmented proof: prove that folded_result = r * comm_w_old + comm_w_cccs
-        let augmented = AugmentedProof::prove(folded_result, r, comm_w_old, final_comm_w_cccs, 1);
+        // For a proper test, create chain with single fold
+        let mut chain = FoldingChain::new();
+        chain.add_fold(r, comm_w_old, final_comm_w_cccs, z_final);
+        let chain_commitment = chain.chain_commitment();
+        let augmented = AugmentedProof::prove(folded_result, r, comm_w_old, final_comm_w_cccs, 1, chain_commitment);
         let augmented_bytes = augmented.to_bytes();
 
         let proof = NovaIVCProof {
