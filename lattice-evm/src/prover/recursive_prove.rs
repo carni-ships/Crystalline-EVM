@@ -661,7 +661,26 @@ impl AugmentedProof {
 
     /// Serialize augmented proof to bytes for storage in NovaIVCProof
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap_or_default()
+        let bytes = match bincode::serialize(self) {
+            Ok(b) => b,
+            Err(e) => {
+                // Write error to a file since eprintln may not appear
+                let msg = format!(
+                    "ERROR: AugmentedProof serialization FAILED: {:?}\n\
+                     ERROR: augmented.n={}, r={}, comm_w_old={}, comm_w_cccs={}\n\
+                     ERROR: SumcheckProof: num_vars={}, claims_len={}, commitments_len={}\n",
+                    e, self.n, self.r, self.comm_w_old, self.comm_w_cccs,
+                    self.sumcheck_proof.num_vars, self.sumcheck_proof.claims.len(), self.sumcheck_proof.commitments.len()
+                );
+                let _ = std::fs::write("/tmp/nova_error.log", &msg);
+                return Vec::new();
+            }
+        };
+        if bytes.is_empty() {
+            let msg = format!("ERROR: to_bytes returned empty for n={}, r={}\n", self.n, self.r);
+            let _ = std::fs::write("/tmp/nova_error.log", &msg);
+        }
+        bytes
     }
 
     /// Deserialize augmented proof from bytes
@@ -935,7 +954,13 @@ impl NovaIVCProver {
         labrador_proofs: &[crate::prover::parallel_prove::BatchProof],
         initial_state: u32,
     ) -> Result<NovaIVCProof, String> {
+        let _ = std::fs::write("/tmp/debug.log", format!(
+            "fold_labrador_proofs called: n_proofs={}, initial_state={}\n",
+            labrador_proofs.len(), initial_state
+        ));
+
         if labrador_proofs.is_empty() {
+            let _ = std::fs::write("/tmp/debug.log", "ERROR: No proofs to fold\n");
             return Err("No Labrador proofs to fold".to_string());
         }
 
@@ -1011,13 +1036,38 @@ impl NovaIVCProver {
             n_proofs,
         );
 
+        let augmented_bytes = augmented.to_bytes();
+
+        let _ = std::fs::write("/tmp/debug.log", format!(
+            "augmented.to_bytes() returned len={}\n",
+            augmented_bytes.len()
+        ));
+
+        // Check if serialization produced empty bytes
+        if augmented_bytes.is_empty() {
+            // This is the actual bug - bincode serialization is failing
+            let _ = std::fs::write("/tmp/debug.log", format!(
+                "ERROR: AugmentedProof serialization failed: n={}, r={}, comm_w_old={}, comm_w_cccs={}\n",
+                augmented.n, augmented.r, augmented.comm_w_old, augmented.comm_w_cccs
+            ));
+            return Err(format!(
+                "AugmentedProof serialization failed: n={}, r={}, comm_w_old={}, comm_w_cccs={}",
+                augmented.n, augmented.r, augmented.comm_w_old, augmented.comm_w_cccs
+            ));
+        }
+
+        let _ = std::fs::write("/tmp/debug.log", format!(
+            "SUCCESS: returning NovaIVCProof with augmented_proof.len={}\n",
+            augmented_bytes.len()
+        ));
+
         Ok(NovaIVCProof {
             running,
             final_step: CCCS {
                 u: final_u,
                 comm_w: final_comm_w,
             },
-            augmented_proof: augmented.to_bytes(),
+            augmented_proof: augmented_bytes,
             folding_chain,
         })
     }
@@ -1901,7 +1951,16 @@ impl AugmentedProofSuperNeo {
 
     /// Serialize to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap_or_default()
+        match bincode::serialize(self) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("[ERROR] AugmentedProofSuperNeo serialization FAILED: {:?}", e);
+                eprintln!("[ERROR] This means SuperNeo will produce 0-byte proofs!");
+                eprintln!("[ERROR] SuperNeo: n={}, r_primary={}, r_multi_len={}, comm_w_initial={}, comm_w_cccs_list_len={}",
+                    self.n, self.r_primary, self.r_multi.len(), self.comm_w_initial, self.comm_w_cccs_list.len());
+                Vec::new()
+            }
+        }
     }
 
     /// Deserialize from bytes
@@ -2182,11 +2241,18 @@ mod tests {
         let augmented = AugmentedProof::prove(folded_result, r, comm_w_old, final_comm_w_cccs, 1);
         let augmented_bytes = augmented.to_bytes();
 
+        // Populate folding chain to match augmented.n = 1
+        // This is required by verify_nova_proof which checks:
+        // - augmented.n == proof.folding_chain.num_folds
+        // - proof.folding_chain.verify() to check all folds
+        let mut folding_chain = FoldingChain::new();
+        folding_chain.add_fold(r, comm_w_old, final_comm_w_cccs, z_final);
+
         let proof = NovaIVCProof {
             running,
             final_step,
             augmented_proof: augmented_bytes,
-            folding_chain: FoldingChain::new(),
+            folding_chain,
         };
 
         // First check the state hash match

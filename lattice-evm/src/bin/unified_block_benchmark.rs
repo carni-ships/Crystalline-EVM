@@ -142,7 +142,7 @@ async fn main() {
     println!("[1/3] Labrador (Parallel Batch) proving...");
     println!("  Tracing {} contracts...", contract_calls.len());
 
-    let labrador_start = Instant::now();
+    let _labrador_start = Instant::now();
     let trace_start = Instant::now();
 
     // Trace all contracts and creations
@@ -291,7 +291,7 @@ async fn main() {
 
             // First pass: collect all witnesses and build proofs list
             // Contract calls
-            for (tx_idx, batch) in per_tx_proofs.iter().enumerate() {
+            for (_tx_idx, batch) in per_tx_proofs.iter().enumerate() {
                 if batch.is_empty() {
                     continue;
                 }
@@ -303,7 +303,7 @@ async fn main() {
             }
 
             // Creations
-            for (idx, batch) in creation_proofs.iter().enumerate() {
+            for (_idx, batch) in creation_proofs.iter().enumerate() {
                 if batch.is_empty() {
                     continue;
                 }
@@ -315,7 +315,7 @@ async fn main() {
             }
 
             // Transfers
-            for (idx, batch) in transfer_proofs.iter().enumerate() {
+            for (_idx, batch) in transfer_proofs.iter().enumerate() {
                 if batch.len() < 4 {
                     continue;
                 }
@@ -431,9 +431,20 @@ async fn main() {
     println!("[2/3] NovaIVC (Constant-Size) proving...");
     println!("  Folding {} Labrador proofs into 1 constant-size proof", labrador_proof_count);
 
+    let _ = std::fs::write("/tmp/debug.log", format!("MAIN: before match, labrador_proof_count={}\n", labrador_proof_count));
+
+    // Check if labrador_result is Ok or Err
+    let is_labrador_ok = labrador_result.is_ok();
+    let _ = std::fs::write("/tmp/debug.log", format!("MAIN: labrador_result.is_ok()={}\n", is_labrador_ok));
+    if !is_labrador_ok {
+        let err_msg = format!("MAIN: labrador Err: {:?}\n", labrador_result.as_ref().err());
+        let _ = std::fs::write("/tmp/debug.log", err_msg);
+    }
+
     // Feed Labrador proofs into NovaIVC for folding
     let (nova_proof_size, nova_verified, nova_folded_count, initial_state) = match &labrador_result {
         Ok(proofs) => {
+            let _ = std::fs::write("/tmp/debug.log", format!("MAIN: in Ok branch, {} proofs\n", proofs.len()));
             // Use initial state derived from block data
             let initial_state = Poseidon2::hash_pair(
                 (block_number as u64 % Q as u64) as u32,
@@ -443,19 +454,23 @@ async fn main() {
             // Create NovaIVC prover to fold Labrador proofs
             let nova_prover = NovaIVCProver::new(4);
 
+            let _ = std::fs::write("/tmp/debug.log", format!("MAIN: calling fold_labrador_proofs with {} proofs\n", proofs.len()));
             let nova_start = Instant::now();
             let nova_result = nova_prover.fold_labrador_proofs(&prover, &proofs, initial_state);
+            let _ = std::fs::write("/tmp/debug.log", format!("MAIN: fold_labrador_proofs returned is_ok={}\n", nova_result.is_ok()));
             let nova_prove_time = nova_start.elapsed().as_millis() as f64;
 
             let (size, verified) = match nova_result {
                 Ok(proof) => {
                     let size = proof.augmented_proof.len();
+                    println!("[NOVADEBUG] MAIN: calling verify_nova_proof");
                     let verified = verify_nova_proof(&proof);
+                    println!("[NOVADEBUG] MAIN: verify_nova_proof returned {}", verified);
                     println!("  Folding time: {:.2}ms for {} proofs -> 1 proof", nova_prove_time, proofs.len());
                     (size, verified)
                 }
                 Err(e) => {
-                    println!("  NovaIVC fold error: {:?}", e);
+                    println!("  NovaIVC fold error: {}", e);
                     (0, false)
                 }
             };
