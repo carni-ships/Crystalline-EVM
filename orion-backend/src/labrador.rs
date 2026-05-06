@@ -12,12 +12,18 @@
 //!
 //! # Thread Safety
 //! ANE operations in orion_latticezk.m are thread-safe (use IOSurface for data transfer).
+//!
+//! # GPU Kernel Paths
+//!
+//! - `prove_batch_gpu`: Uses latticezk_prove_batch_gpu (MatVec → CPU RNS/CRT)
+//! - `prove_batch_fused`: Uses matvec_rns_crt kernel (MatVec + RNS + CRT on GPU)
 
 use super::error::BackendError;
+use crate::gpu_matvec::GPUContext;
 use orion_sys::{
     LatticeZKProvingKey, LatticeZKVerificationKey, LatticeZKProof,
     LATTICEZK_L,
-    latticezk_prove, latticezk_verify,
+    latticezk_prove, latticezk_prove_batch, latticezk_prove_batch_gpu, latticezk_verify,
     latticezk_keygen,
     latticezk_sample_short_vector,
 };
@@ -78,6 +84,202 @@ impl LabradorProver {
         let s_f32: Vec<f32> = s.iter().map(|&v| v as f32).collect();
         self.prove(&s_f32)
     }
+
+    /// Generate proofs for multiple witnesses in batch (auto-selects GPU/ANE)
+    ///
+    /// Automatically uses GPU batch proving if available, otherwise falls back to ANE.
+    /// Amortizes the matrix expansion cost (latticezk_expand_a) across all witnesses.
+    ///
+    /// # Arguments
+    /// * `witnesses` - Slice of witness vectors, each of length LATTICEZK_L (256)
+    ///
+    /// # Returns
+    /// Vector of proofs, one per witness
+    pub fn prove_batch(&self, witnesses: &[&[f32]]) -> Result<Vec<LatticeZKProof>, BackendError> {
+        if witnesses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // SECURITY: Limit batch size to prevent memory exhaustion DoS
+        const MAX_BATCH_SIZE: i32 = 10_000;
+        let num_witnesses = witnesses.len() as i32;
+        if num_witnesses > MAX_BATCH_SIZE {
+            return Err(BackendError::InvalidWitness(
+                format!("Batch size {} exceeds maximum {} - potential DoS prevention",
+                    num_witnesses, MAX_BATCH_SIZE)
+            ));
+        }
+
+        // Validate all witnesses have correct length
+        for (i, witness) in witnesses.iter().enumerate() {
+            if witness.len() != LATTICEZK_L as usize {
+                return Err(BackendError::InvalidWitness(
+                    format!("Witness {}: expected length {}, got {}",
+                        i, LATTICEZK_L, witness.len())
+                ));
+            }
+        }
+
+        let mut proofs = vec![LatticeZKProof::default(); num_witnesses as usize];
+
+        // Flatten witnesses into batch format: [witness0_l0, witness0_l1, ..., witness1_l0, ...]
+        let mut s_batch: Vec<f32> = Vec::with_capacity((num_witnesses as usize) * (LATTICEZK_L as usize));
+        for witness in witnesses {
+            s_batch.extend_from_slice(witness);
+        }
+
+        // Try GPU batch first, fall back to ANE if GPU unavailable
+        let start = std::time::Instant::now();
+        let success = unsafe {
+            // Try GPU path first - it has TRUE parallelism
+            if GPUContext::available() {
+                latticezk_prove_batch_gpu(
+                    &self.pk,
+                    s_batch.as_ptr(),
+                    num_witnesses,
+                    proofs.as_mut_ptr(),
+                )
+            } else {
+                // Fall back to ANE (serialized per witness)
+                latticezk_prove_batch(
+                    &self.pk,
+                    s_batch.as_ptr(),
+                    num_witnesses,
+                    proofs.as_mut_ptr(),
+                )
+            }
+        };
+        let elapsed = start.elapsed();
+
+        if !success {
+            return Err(BackendError::AneError("Labrador batch prove failed".to_string()));
+        }
+
+        tracing::debug!("Labrador batch prove completed {} proofs in {:?}", num_witnesses, elapsed);
+
+        Ok(proofs)
+    }
+
+    /// Generate proofs for multiple witnesses using GPU batch (force GPU path)
+    ///
+    /// Uses orion_gpu_matvec_batch for TRUE PARALLEL MatVec processing.
+    /// Returns error if GPU is not available.
+    ///
+    /// # Arguments
+    /// * `witnesses` - Slice of witness vectors, each of length LATTICEZK_L (256)
+    ///
+    /// # Returns
+    /// Vector of proofs, one per witness
+    pub fn prove_batch_gpu(&self, witnesses: &[&[f32]]) -> Result<Vec<LatticeZKProof>, BackendError> {
+        if witnesses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate all witnesses have correct length
+        for (i, witness) in witnesses.iter().enumerate() {
+            if witness.len() != LATTICEZK_L as usize {
+                return Err(BackendError::InvalidWitness(
+                    format!("Witness {}: expected length {}, got {}",
+                        i, LATTICEZK_L, witness.len())
+                ));
+            }
+        }
+
+        // Check GPU availability
+        if !GPUContext::available() {
+            return Err(BackendError::AneError("GPU not available".to_string()));
+        }
+
+        let num_witnesses = witnesses.len() as i32;
+        let mut proofs = vec![LatticeZKProof::default(); num_witnesses as usize];
+
+        // Flatten witnesses into batch format
+        let mut s_batch: Vec<f32> = Vec::with_capacity((num_witnesses as usize) * (LATTICEZK_L as usize));
+        for witness in witnesses {
+            s_batch.extend_from_slice(witness);
+        }
+
+        // Time the GPU FFI call
+        let start = std::time::Instant::now();
+        let success = unsafe {
+            latticezk_prove_batch_gpu(
+                &self.pk,
+                s_batch.as_ptr(),
+                num_witnesses,
+                proofs.as_mut_ptr(),
+            )
+        };
+        let elapsed = start.elapsed();
+
+        if !success {
+            return Err(BackendError::AneError("Labrador GPU batch prove failed".to_string()));
+        }
+
+        tracing::debug!("Labrador GPU batch prove completed {} proofs in {:?}", num_witnesses, elapsed);
+
+        Ok(proofs)
+    }
+
+    /// Generate proofs using fully GPU-accelerated path (no ANE)
+///
+/// This is the ultimate GPU path: seed → A (GPU) → A*s + RNS + CRT (GPU)
+/// No CPU or ANE involved in the core math.
+///
+/// This method calls `latticezk_prove_batch_fused` which:
+/// 1. Expands A from seed on GPU (via expand_a_from_seed kernel)
+/// 2. Computes MatVec + RNS decomposition + CRT reconstruction on GPU
+/// 3. Generates Fiat-Shamir proofs on CPU
+///
+/// # Arguments
+/// * `witnesses` - Slice of witness vectors, each of length LATTICEZK_L (256)
+///
+/// # Returns
+/// Vector of proofs, one per witness
+pub fn prove_batch_fused(&self, witnesses: &[&[f32]]) -> Result<Vec<LatticeZKProof>, BackendError> {
+    use orion_sys::latticezk_prove_batch_fused;
+
+    if witnesses.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Validate all witnesses have correct length
+    for (i, witness) in witnesses.iter().enumerate() {
+        if witness.len() != LATTICEZK_L as usize {
+            return Err(BackendError::InvalidWitness(
+                format!("Witness {}: expected length {}, got {}",
+                    i, LATTICEZK_L, witness.len())
+            ));
+        }
+    }
+
+    let num_witnesses = witnesses.len() as i32;
+    let mut proofs = vec![LatticeZKProof::default(); num_witnesses as usize];
+
+    // Flatten witnesses into batch format
+    let s_batch: Vec<f32> = witnesses.iter()
+        .flat_map(|w| w.iter().copied())
+        .collect();
+
+    // Time the GPU FFI call
+    let start = std::time::Instant::now();
+    let success = unsafe {
+        latticezk_prove_batch_fused(
+            &self.pk,
+            s_batch.as_ptr(),
+            num_witnesses,
+            proofs.as_mut_ptr(),
+        )
+    };
+    let elapsed = start.elapsed();
+
+    if !success {
+        return Err(BackendError::AneError("Labrador fused batch prove failed".to_string()));
+    }
+
+    tracing::debug!("Labrador fused batch prove completed {} proofs in {:?}", num_witnesses, elapsed);
+
+    Ok(proofs)
+}
 }
 
 /// Labrador verifier for checking proofs
@@ -189,5 +391,43 @@ mod tests {
         let proof = prover.prove_from_u64(&s_u64).expect("ANE hardware required for proving");
         let valid = verifier.verify(&proof).expect("Verification should succeed");
         assert!(valid, "Proof verification should succeed with u64 input");
+    }
+
+    #[test]
+    #[ignore = "Requires ANE hardware"]
+    fn test_prove_batch() {
+        let seed = generate_seed();
+        let prover = LabradorProver::new_with_keygen(&seed);
+
+        let vk = LatticeZKVerificationKey {
+            q: prover.pk.q,
+            k: prover.pk.k,
+            l: prover.pk.l,
+            n: prover.pk.n,
+        };
+
+        let verifier = LabradorVerifier::new(vk);
+
+        // Create 4 witnesses
+        let witnesses: Vec<Vec<f32>> = (0..4)
+            .map(|i| {
+                (0..LATTICEZK_L as usize)
+                    .map(|j| ((i as f32 + 1.0) * j as f32) % 8.0)
+                    .collect()
+            })
+            .collect();
+
+        let witness_refs: Vec<&[f32]> = witnesses.iter().map(|v| v.as_slice()).collect();
+
+        // Batch prove all witnesses
+        let proofs = prover.prove_batch(&witness_refs)
+            .expect("ANE hardware required for batch proving");
+
+        // Verify all proofs
+        for (i, proof) in proofs.iter().enumerate() {
+            let valid = verifier.verify(proof)
+                .expect("Verification should succeed");
+            assert!(valid, "Batch proof {} verification should succeed", i);
+        }
     }
 }

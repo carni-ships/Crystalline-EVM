@@ -160,6 +160,19 @@ impl Poseidon2 {
         u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]])
     }
 
+    /// Hash field element with itself (for odd Merkle tree nodes)
+    /// Uses distinct domain separator "HP2SELF1" to prevent collision with hash_pair
+    pub fn hash_self(a: u32) -> u32 {
+        let mut input = [0u8; 32];
+        input[0..4].copy_from_slice(&a.to_le_bytes());
+        input[4..8].copy_from_slice(&a.to_le_bytes());
+        // Domain separator "HP2SELF1" (8 bytes) - distinct from hash_pair
+        input[8..16].copy_from_slice(b"HP2SELF1");
+
+        let hash = Self::hash(&input);
+        u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]])
+    }
+
     /// Compute Merkle root from leaves
     pub fn merkle_root(leaves: &[u32]) -> u32 {
         if leaves.is_empty() {
@@ -175,8 +188,8 @@ impl Poseidon2 {
                 let hash = if pair.len() == 2 {
                     Self::hash_pair(pair[0], pair[1])
                 } else {
-                    // Odd node - hash with itself
-                    Self::hash_pair(pair[0], pair[0])
+                    // Odd node - hash with itself using distinct domain separator
+                    Self::hash_self(pair[0])
                 };
                 new_level.push(hash);
             }

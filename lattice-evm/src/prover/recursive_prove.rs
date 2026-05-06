@@ -1272,7 +1272,11 @@ impl SuperNeoProver {
     /// batch_size: Number of CCCS instances to fold per round (multifold factor)
     /// num_steps: Total number of steps to prove (for challenge derivation)
     pub fn new(batch_size: usize, num_steps: usize) -> Self {
-        let challenges = Self::derive_challenges(batch_size, num_steps);
+        // SECURITY: Use a placeholder seed here - actual challenges are derived
+        // after we have the initial state z_0. We defer to prove() for proper
+        // challenge derivation that includes the actual trace data.
+        let seed = Poseidon2::hash_pair(batch_size as u32, num_steps as u32);
+        let challenges = Self::derive_challenges_from_seed(seed, num_steps);
         SuperNeoProver {
             step_fn: EVMStepFunction {
                 public_inputs: 1,  // z_i hash
@@ -1286,6 +1290,9 @@ impl SuperNeoProver {
 
     /// Derive precomputed challenges from initial state
     ///
+    /// SECURITY: Now includes z_0 (initial state hash) in challenge derivation
+    /// to bind challenges to the actual trace data, preventing precomputation attacks.
+    ///
     /// Unlike Nova which computes r = Hash(running.u || step_cccs.u) per fold,
     /// SuperNeo derives ALL challenges upfront from z_0.
     ///
@@ -1293,11 +1300,12 @@ impl SuperNeoProver {
     /// 1. Faster per-step computation (no hash needed)
     /// 2. Parallel proving of all steps
     /// 3. Better constraint system optimization
-    fn derive_challenges(batch_size: usize, num_steps: usize) -> Vec<u32> {
+    fn derive_challenges(z_0: u32, batch_size: usize, num_steps: usize) -> Vec<u32> {
         let mut challenges = Vec::with_capacity(num_steps);
+        // SECURITY: Include z_0 in seed to bind challenges to actual trace
         let seed = Poseidon2::hash_pair(
-            batch_size as u32,
-            num_steps as u32,
+            Poseidon2::hash_pair(batch_size as u32, num_steps as u32),
+            z_0,
         );
 
         // Derive challenges: challenges[i] = Hash(seed || i)
@@ -1306,6 +1314,16 @@ impl SuperNeoProver {
             challenges.push(challenge);
         }
 
+        challenges
+    }
+
+    /// Derive challenges from a given seed (for placeholder generation)
+    fn derive_challenges_from_seed(seed: u32, num_steps: usize) -> Vec<u32> {
+        let mut challenges = Vec::with_capacity(num_steps);
+        for i in 0..num_steps {
+            let challenge = Poseidon2::hash_pair(seed, i as u32);
+            challenges.push(challenge);
+        }
         challenges
     }
 
@@ -1323,6 +1341,11 @@ impl SuperNeoProver {
 
         // Initial state - used to derive challenges
         let z_0 = self.step_fn.initial_state(trace);
+
+        // SECURITY: Re-derive challenges with z_0 bound to prevent precomputation attacks
+        // The constructor only creates placeholder challenges. Now that we have z_0,
+        // we can properly derive challenges that depend on actual trace data.
+        let challenges = SuperNeoProver::derive_challenges(z_0, self.batch_size, n_steps);
 
         // Collect all witnesses and compute all next states FIRST
         // This allows us to batch all proofs together (GPU accelerated)
@@ -1395,8 +1418,8 @@ impl SuperNeoProver {
                 comm_w: Poseidon2::hash_pair(proof.commitment[0] as u32, proof.commitment[1] as u32),
             };
 
-            // Use precomputed challenge instead of hashing
-            let r = self.challenges[step % self.challenges.len()];
+            // Use properly derived challenge (bound to z_0)
+            let r = challenges[step % challenges.len()];
 
             // SuperNeo multifolding: comm_w = sum(r_i * comm_w_i) + comm_w_final
             // For batch_size=1 (per-opcode), this is: comm_w = r * running.comm_w + step_cccs.comm_w
