@@ -4,10 +4,11 @@
 //! Adapted from Circle STARK's BlockAIR for lattice field q=8383489.
 
 pub mod constraints;
+pub mod full_constraints;
 pub mod polynomial_encoder;
 
 pub use constraints::*;
-pub use polynomial_encoder::*;
+pub use full_constraints::*;
 pub use orion_backend::FieldElement;
 
 /// AIR constraint for lattice field

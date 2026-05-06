@@ -3,9 +3,11 @@
 //! Lattice-based proving backend using Labrador SNARK protocol:
 //! - **Labrador** for SNARK proof generation
 //! - **LatticeOps** for ANE-accelerated MatVec operations
+//! - **GPUMatVec** for GPU-accelerated MatVec (alternative to ANE)
 
 pub mod labrador;
 pub mod lattice_ops;
+pub mod gpu_matvec;
 pub mod error;
 
 #[cfg(feature = "mock")]

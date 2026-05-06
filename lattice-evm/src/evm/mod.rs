@@ -7,11 +7,19 @@
 mod eth;
 mod eth_rpc;
 mod opcodes;
+pub mod common_trace;
 pub mod full_evm;
+pub mod jolt_trace_normalizer;
+
+// RISC Zero bridge - requires cargo-risczero toolchain installation
+// Uncomment when RISC Zero is available:
+// pub mod risczero_bridge;
 
 pub use opcodes::{OpCode, EVMState, TraceRow, execute_bytecode, execute_bytecode_with_calldata};
 pub use eth_rpc::{EthClient, EthereumBlock, EthereumTransaction, RPCConfig, hex_to_bytes, hex_to_u64, get_current_block_number};
 pub use full_evm::{full_evm_validate, full_evm_can_execute, execute_evm_with_trace, execute_evm_with_diff};
+pub use jolt_trace_normalizer::{JoltTraceNormalizer, NormalizedStep};
+pub use common_trace::{CommonTraceRow, Q};
 
 
 /// EVM circuit constraints for lattice field

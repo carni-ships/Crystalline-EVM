@@ -34,7 +34,7 @@ pub fn execute_and_trace(code: &[u8], gas: u64) -> Result<(EVMState, Vec<TraceRo
 
 /// Build full witness from execution trace
 pub fn build_full_witness(traces: &[Vec<TraceRow>]) -> FullTraceWitness {
-    let evaluator = EVMAIREvaluator::new();
+    let mut evaluator = EVMAIREvaluator::new();
     let mut all_trace_data: Vec<Vec<u32>> = Vec::new();
     let mut all_constraint_evals: Vec<Vec<i64>> = Vec::new();
     let mut all_trace_hashes: Vec<u32> = Vec::new();

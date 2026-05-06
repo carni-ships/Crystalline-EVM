@@ -298,9 +298,11 @@ fn process_transaction(
     Ok((state_diff, trace, smt))
 }
 
-/// Convert RevmTraceRow to field elements for proving
-fn revm_trace_to_field_elements(row: &RevmTraceRow) -> Vec<u32> {
-    let mut elements = Vec::with_capacity(32);
+/// Convert RevmTraceRow to MINIMAL field elements for proving (no padding)
+/// Produces 9 elements per row: PC, opcode, gas_before, gas_after, stack_len, stack[0-3]
+/// This compact format packs ~28 rows per 256-element chunk vs 8 rows with padding
+fn revm_trace_to_field_elements_compact(row: &RevmTraceRow) -> Vec<u32> {
+    let mut elements = Vec::with_capacity(9);
 
     // PC (mod Q)
     elements.push((row.pc % 8383489) as u32);
@@ -323,11 +325,6 @@ fn revm_trace_to_field_elements(row: &RevmTraceRow) -> Vec<u32> {
         } else {
             elements.push(0);
         }
-    }
-
-    // Pad to 32 elements for consistent batch size
-    while elements.len() < 32 {
-        elements.push(0);
     }
 
     elements
@@ -571,9 +568,9 @@ async fn main() {
                 let bc_root = build_bytecode_commitment(&bytecode);
                 bytecode_roots.push(bc_root);
 
-                // Convert trace to field elements
+                // Convert trace to field elements (compact format: 9 elements per row)
                 let field_elements: Vec<u32> = trace.iter()
-                    .flat_map(revm_trace_to_field_elements)
+                    .flat_map(revm_trace_to_field_elements_compact)
                     .collect();
 
                 // Split into 256-element chunks for Labrador

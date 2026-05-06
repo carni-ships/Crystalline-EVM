@@ -194,14 +194,14 @@ async fn main() {
     let contract_elements: Vec<u32> = trace_results.iter()
         .filter(|(_, _, success, _)| *success)
         .flat_map(|(_, trace, _, _)| {
-            trace.iter().flat_map(|row| row.to_commit_prove_field_elements())
+            trace.iter().flat_map(|row| row.to_commit_prove_field_elements_compact())
         })
         .collect();
 
     let creation_elements: Vec<u32> = creation_results.iter()
         .filter(|(_, _, success, _)| *success)
         .flat_map(|(_, trace, _, _)| {
-            trace.iter().flat_map(|row| row.to_commit_prove_field_elements())
+            trace.iter().flat_map(|row| row.to_commit_prove_field_elements_compact())
         })
         .collect();
 
@@ -214,7 +214,7 @@ async fn main() {
         .filter(|(_, _, success, _)| *success)
         .flat_map(|(_, trace, _, _)| {
             let elements: Vec<u32> = trace.iter()
-                .flat_map(|row| row.to_commit_prove_field_elements())
+                .flat_map(|row| row.to_commit_prove_field_elements_compact())
                 .collect();
             if elements.is_empty() {
                 vec![]
@@ -229,7 +229,7 @@ async fn main() {
         .filter(|(_, _, success, _)| *success)
         .flat_map(|(_, trace, _, _)| {
             let elements: Vec<u32> = trace.iter()
-                .flat_map(|row| row.to_commit_prove_field_elements())
+                .flat_map(|row| row.to_commit_prove_field_elements_compact())
                 .collect();
             if elements.is_empty() {
                 vec![]

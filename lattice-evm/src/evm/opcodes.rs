@@ -2309,6 +2309,39 @@ impl TraceRow {
         ]
     }
 
+    /// Compact conversion: ~9 elements per row, packs ~28 rows per 256-element chunk
+    /// Use this for better efficiency when not needing full commitment data
+    pub fn to_commit_prove_field_elements_compact(&self) -> Vec<u32> {
+        let mut elements = Vec::with_capacity(9);
+
+        // PC (mod Q)
+        elements.push(self.pc as u32 % 8383489);
+
+        // Opcode
+        elements.push(self.opcode as u32);
+
+        // Gas after
+        elements.push(self.gas_after as u32 % 8383489);
+
+        // Stack height
+        let stack_height = self.stack.len() as u32 % 8383489;
+        elements.push(stack_height);
+
+        // Stack: top 4 items as field elements
+        let stack_len = self.stack.len().min(4);
+        elements.push(stack_len as u32);
+
+        for i in 0..4 {
+            if i < stack_len {
+                elements.push(self.stack[i] % 8383489);
+            } else {
+                elements.push(0);
+            }
+        }
+
+        elements
+    }
+
     /// Convert to COMMIT-PROVE field elements with actual balance and storage values (17 elements)
     ///
     /// Use this when you have actual balance and storage tracking for state transition verification.
