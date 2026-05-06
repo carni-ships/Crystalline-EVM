@@ -753,6 +753,7 @@ async fn main() {
         &prover,
         &batch_proofs,
         initial_state,
+        block_number,
     );
     let fold_time = fold_start.elapsed().as_millis() as f64;
 

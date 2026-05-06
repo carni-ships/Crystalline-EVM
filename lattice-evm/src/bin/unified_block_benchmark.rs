@@ -9,13 +9,13 @@
 
 use lattice_evm::evm::{execute_bytecode_with_calldata, EthereumBlock, TraceRow};
 use lattice_evm::prover::{Prover, ProverConfig};
+use rayon::prelude::*;
 use lattice_evm::prover::recursive_prove::{
     NovaIVCProver, SuperNeoProver, verify_nova_proof, verify_supernova_proof,
 };
 use lattice_evm::prover::parallel_prove::{ParallelProver, BatchProof};
 use lattice_evm::crypto::{Poseidon2, Q};
 use std::time::Instant;
-use rayon::prelude::*;
 
 const WITNESS_SIZE: usize = 256;
 
@@ -431,50 +431,20 @@ async fn main() {
     println!("[2/3] NovaIVC (Constant-Size) proving...");
     println!("  Folding {} Labrador proofs into 1 constant-size proof", labrador_proof_count);
 
-    let _ = std::fs::write("/tmp/debug.log", format!("MAIN: before match, labrador_proof_count={}\n", labrador_proof_count));
-
-    // Check if labrador_result is Ok or Err
-    let is_labrador_ok = labrador_result.is_ok();
-    let _ = std::fs::write("/tmp/debug.log", format!("MAIN: labrador_result.is_ok()={}\n", is_labrador_ok));
-    if !is_labrador_ok {
-        let err_msg = format!("MAIN: labrador Err: {:?}\n", labrador_result.as_ref().err());
-        let _ = std::fs::write("/tmp/debug.log", err_msg);
-    }
-
     // Feed Labrador proofs into NovaIVC for folding
     let (nova_proof_size, nova_verified, nova_folded_count, initial_state) = match &labrador_result {
         Ok(proofs) => {
-            let _ = std::fs::write("/tmp/debug.log", format!("MAIN: in Ok branch, {} proofs\n", proofs.len()));
             // Use initial state derived from block data
             let initial_state = Poseidon2::hash_pair(
                 (block_number as u64 % Q as u64) as u32,
                 all_elements.len() as u32,
             );
 
-            // Compute block_hash from block_number for replay protection
-            // block_hash = Poseidon2(block_number) as [u8; 32]
-            let bh_field = Poseidon2::hash_pair(block_number as u32, 0);
-            let block_hash = {
-                let mut bh = [0u8; 32];
-                bh[0..4].copy_from_slice(&bh_field.to_le_bytes());
-                // Extend to full 32 bytes using repeated hashing
-                let bh2 = Poseidon2::hash_pair(bh_field, 1);
-                bh[4..8].copy_from_slice(&bh2.to_le_bytes());
-                let bh3 = Poseidon2::hash_pair(bh_field, 2);
-                bh[8..12].copy_from_slice(&bh3.to_le_bytes());
-                let bh4 = Poseidon2::hash_pair(bh_field, 3);
-                bh[12..16].copy_from_slice(&bh4.to_le_bytes());
-                // Fill rest with zeros (security through truncation)
-                bh
-            };
-
             // Create NovaIVC prover to fold Labrador proofs
             let nova_prover = NovaIVCProver::new(4);
 
-            let _ = std::fs::write("/tmp/debug.log", format!("MAIN: calling fold_labrador_proofs with {} proofs\n", proofs.len()));
             let nova_start = Instant::now();
-            let nova_result = nova_prover.fold_labrador_proofs(&prover, &proofs, initial_state, block_hash);
-            let _ = std::fs::write("/tmp/debug.log", format!("MAIN: fold_labrador_proofs returned is_ok={}\n", nova_result.is_ok()));
+            let nova_result = nova_prover.fold_labrador_proofs(&prover, &proofs, initial_state, block_number);
             let nova_prove_time = nova_start.elapsed().as_millis() as f64;
 
             let (size, verified) = match nova_result {
@@ -515,22 +485,8 @@ async fn main() {
             let n_steps = proofs.len();
             let superneo_prover = SuperNeoProver::new(4, n_steps);
 
-            // Use same block_hash as NovaIVC for consistency
-            let bh_field = Poseidon2::hash_pair(block_number as u32, 0);
-            let block_hash = {
-                let mut bh = [0u8; 32];
-                bh[0..4].copy_from_slice(&bh_field.to_le_bytes());
-                let bh2 = Poseidon2::hash_pair(bh_field, 1);
-                bh[4..8].copy_from_slice(&bh2.to_le_bytes());
-                let bh3 = Poseidon2::hash_pair(bh_field, 2);
-                bh[8..12].copy_from_slice(&bh3.to_le_bytes());
-                let bh4 = Poseidon2::hash_pair(bh_field, 3);
-                bh[12..16].copy_from_slice(&bh4.to_le_bytes());
-                bh
-            };
-
             let superneo_start = Instant::now();
-            let superneo_result = superneo_prover.fold_labrador_proofs(&prover, &proofs, initial_state, block_hash);
+            let superneo_result = superneo_prover.fold_labrador_proofs(&prover, &proofs, initial_state, block_number);
 
             let superneo_prove_time = superneo_start.elapsed().as_millis() as f64;
 

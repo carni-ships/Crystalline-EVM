@@ -158,8 +158,8 @@ fn main() {
     println!("|---|----------------|-------------------|");
 
     for n in [1, 4, 16, 64, 256, 1024].iter() {
-        // Create a dummy proof with specific n
-        let proof = AugmentedProof::prove(*n as u32, 12345, 0, 0, *n);
+        // Create a dummy proof with specific n (block_number=0 for unbound)
+        let proof = AugmentedProof::prove(*n as u32, 12345, 0, 0, *n, 0);
         let bytes = proof.to_bytes();
         println!("| {} | {} bytes | {} bytes (sumcheck) |", n, bytes.len(), bytes.len() - 16); // 16 for header (r, n, comm_w_old, comm_w_cccs)
     }

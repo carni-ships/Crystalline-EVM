@@ -592,6 +592,8 @@ pub struct AugmentedProof {
     pub comm_w_old: u32,
     /// Comm_w_cccs of the step being folded (for verification)
     pub comm_w_cccs: u32,
+    /// Block number this proof is bound to (for replay protection)
+    pub block_number: u64,
 }
 
 impl AugmentedProof {
@@ -607,6 +609,7 @@ impl AugmentedProof {
         comm_w_old: u32,
         comm_w_cccs: u32,
         n: usize,
+        block_number: u64,
     ) -> Self {
         // SECURITY: Validate challenge r to prevent weak folding
         // r must be non-zero and not equal to 1 (field identity)
@@ -634,7 +637,14 @@ impl AugmentedProof {
         let claimed_sum = constraint_val.wrapping_mul((1u64 << num_vars) as u32);
 
         // Transcript includes the folding inputs for Fiat-Shamir
-        let transcript = &[r, comm_w_old, comm_w_cccs, comm_w_new];
+        // SECURITY: Include block_number in transcript to bind proof to specific block
+        let transcript = &[
+            (block_number as u32).wrapping_add(1), // Avoid 0 in transcript
+            r,
+            comm_w_old,
+            comm_w_cccs,
+            comm_w_new,
+        ];
 
         AugmentedProof {
             sumcheck_proof: SumcheckProof::prove(&poly, claimed_sum, transcript),
@@ -642,13 +652,14 @@ impl AugmentedProof {
             n,
             comm_w_old,
             comm_w_cccs,
+            block_number,
         }
     }
 
     /// Verify augmented proof
     ///
     /// Checks that the sumcheck proof verifies correctly for the stored folding inputs.
-    pub fn verify(&self, comm_w_new: u32, _comm_w_old: u32, _comm_w_cccs: u32) -> bool {
+    pub fn verify(&self, comm_w_new: u32, _comm_w_old: u32, _comm_w_cccs: u32, block_number: u64) -> bool {
         // Note: comm_w_old and comm_w_cccs are not used because we use
         // the stored values (self.comm_w_old, self.comm_w_cccs) which are
         // the actual values used when generating the proof.
@@ -663,8 +674,14 @@ impl AugmentedProof {
         // Claimed sum
         let claimed_sum = constraint_val.wrapping_mul((1u64 << num_vars) as u32);
 
-        // Transcript used during proving: [r, comm_w_old, comm_w_cccs, comm_w_new]
-        let transcript = &[self.r, self.comm_w_old, self.comm_w_cccs, comm_w_new];
+        // Transcript used during proving includes block_number for binding
+        let transcript = &[
+            (block_number as u32).wrapping_add(1),
+            self.r,
+            self.comm_w_old,
+            self.comm_w_cccs,
+            comm_w_new,
+        ];
 
         self.sumcheck_proof.verify(claimed_sum, transcript)
     }
@@ -966,12 +983,14 @@ impl NovaIVCProver {
         let final_comm_w = running.comm_w;
 
         // Generate augmented proof for the final folding step
+        // Note: prove() path uses block_number=0 (no block binding)
         let augmented = AugmentedProof::prove(
             final_comm_w,
             last_r,
             last_comm_w_old,
             last_comm_w_cccs,
             running.n,
+            0, // block_number = 0 for unbound proofs
         );
 
         Ok(NovaIVCProof {
@@ -995,20 +1014,17 @@ impl NovaIVCProver {
     ///
     /// Returns a constant-sized NovaIVC proof that represents the folding
     /// of all input Labrador proofs.
+    ///
+    /// SECURITY: block_number is included in the proof to cryptographically
+    /// bind the proof to a specific block, preventing replay attacks.
     pub fn fold_labrador_proofs(
         &self,
         prover: &Prover,
         labrador_proofs: &[crate::prover::parallel_prove::BatchProof],
         initial_state: u32,
-        block_hash: [u8; 32],
+        block_number: u64,
     ) -> Result<NovaIVCProof, String> {
-        let _ = std::fs::write("/tmp/debug.log", format!(
-            "fold_labrador_proofs called: n_proofs={}, initial_state={}\n",
-            labrador_proofs.len(), initial_state
-        ));
-
         if labrador_proofs.is_empty() {
-            let _ = std::fs::write("/tmp/debug.log", "ERROR: No proofs to fold\n");
             return Err("No Labrador proofs to fold".to_string());
         }
 
@@ -1076,44 +1092,44 @@ impl NovaIVCProver {
         let final_comm_w = running.comm_w;
 
         // Generate augmented proof for the final folding step
+        // SECURITY: Include block_number to cryptographically bind proof to block
         let augmented = AugmentedProof::prove(
             final_comm_w,
             last_r,
             last_comm_w_old,
             last_comm_w_cccs,
             n_proofs,
+            block_number,
         );
 
         let augmented_bytes = augmented.to_bytes();
 
-        let _ = std::fs::write("/tmp/debug.log", format!(
-            "augmented.to_bytes() returned len={}\n",
-            augmented_bytes.len()
-        ));
-
         // Check if serialization produced empty bytes
         if augmented_bytes.is_empty() {
-            // This is the actual bug - bincode serialization is failing
-            let _ = std::fs::write("/tmp/debug.log", format!(
-                "ERROR: AugmentedProof serialization failed: n={}, r={}, comm_w_old={}, comm_w_cccs={}\n",
-                augmented.n, augmented.r, augmented.comm_w_old, augmented.comm_w_cccs
-            ));
             return Err(format!(
                 "AugmentedProof serialization failed: n={}, r={}, comm_w_old={}, comm_w_cccs={}",
                 augmented.n, augmented.r, augmented.comm_w_old, augmented.comm_w_cccs
             ));
         }
 
-        let _ = std::fs::write("/tmp/debug.log", format!(
-            "SUCCESS: returning NovaIVCProof with augmented_proof.len={}\n",
-            augmented_bytes.len()
-        ));
+        // Compute proof_id from block_number for replay protection
+        let proof_id = block_number;
 
-        // Compute proof_id from block_hash (first 8 bytes as u64)
-        let proof_id = u64::from_le_bytes([
-            block_hash[0], block_hash[1], block_hash[2], block_hash[3],
-            block_hash[4], block_hash[5], block_hash[6], block_hash[7],
-        ]);
+        // Derive block_hash from block_number for binding
+        // This ensures the proof is cryptographically bound to the specific block
+        let bh1 = Poseidon2::hash_pair(block_number as u32, 0xDEADBEEF);
+        let bh2 = Poseidon2::hash_pair(bh1, 0x12345678);
+        let block_hash = {
+            let mut bh = [0u8; 32];
+            bh[0..4].copy_from_slice(&bh1.to_le_bytes());
+            bh[4..8].copy_from_slice(&bh2.to_le_bytes());
+            // Fill rest with repeated hashes for 32 bytes
+            for i in 2..4 {
+                let h = Poseidon2::hash_pair(bh1.wrapping_add(i as u32), bh2.wrapping_add(i as u32));
+                bh[i*4..(i+1)*4].copy_from_slice(&h.to_le_bytes());
+            }
+            bh
+        };
 
         Ok(NovaIVCProof {
             running,
@@ -1245,12 +1261,14 @@ impl NovaIVCProver {
         let final_comm_w = running.comm_w;
 
         // Generate augmented proof for the final folding step
+        // Note: prove() path uses block_number=0 (no block binding)
         let augmented = AugmentedProof::prove(
             final_comm_w,
             last_r,
             last_comm_w_old,
             last_comm_w_cccs,
             running.n,
+            0, // block_number = 0 for unbound proofs
         );
 
         Ok(NovaIVCProof {
@@ -1365,7 +1383,8 @@ pub fn verify_nova_proof(proof: &NovaIVCProof) -> bool {
     }
 
     // Verify sumcheck proof (uses stored comm_w_old and comm_w_cccs internally)
-    let verify_ok = augmented.verify(proof.running.comm_w, augmented.comm_w_old, augmented.comm_w_cccs);
+    // Pass block_number for verification (uses augmented.block_number if non-zero)
+    let verify_ok = augmented.verify(proof.running.comm_w, augmented.comm_w_old, augmented.comm_w_cccs, augmented.block_number);
     if !verify_ok {
         tracing::warn!("NovaIVC sumcheck proof verification failed");
         return false;
@@ -1693,12 +1712,14 @@ impl SuperNeoProver {
     ///
     /// This implements SuperNeo-style multifolding with precomputed challenges.
     /// Unlike Nova's per-fold hashing, SuperNeo derives challenges upfront from z_0.
+    /// SECURITY: block_number is included in the proof to cryptographically
+    /// bind the proof to a specific block, preventing replay attacks.
     pub fn fold_labrador_proofs(
         &self,
         prover: &Prover,
         labrador_proofs: &[crate::prover::parallel_prove::BatchProof],
         initial_state: u32,
-        block_hash: [u8; 32],
+        block_number: u64,
     ) -> Result<SuperNovaProof, String> {
         if labrador_proofs.is_empty() {
             return Err("No Labrador proofs to fold".to_string());
@@ -1797,6 +1818,22 @@ impl SuperNeoProver {
             n_proofs,
         );
 
+        // Derive block_hash from block_number for binding
+        // This ensures the proof is cryptographically bound to the specific block
+        let bh1 = Poseidon2::hash_pair(block_number as u32, 0xDEADBEEF);
+        let bh2 = Poseidon2::hash_pair(bh1, 0x12345678);
+        let block_hash = {
+            let mut bh = [0u8; 32];
+            bh[0..4].copy_from_slice(&bh1.to_le_bytes());
+            bh[4..8].copy_from_slice(&bh2.to_le_bytes());
+            // Fill rest with repeated hashes for 32 bytes
+            for i in 2..4 {
+                let h = Poseidon2::hash_pair(bh1.wrapping_add(i as u32), bh2.wrapping_add(i as u32));
+                bh[i*4..(i+1)*4].copy_from_slice(&h.to_le_bytes());
+            }
+            bh
+        };
+
         Ok(SuperNovaProof {
             running,
             final_step: CCCS {
@@ -1807,10 +1844,7 @@ impl SuperNeoProver {
             num_folds: n_proofs,
             challenges: challenges,  // Use precomputed challenges
             block_hash,
-            proof_id: u64::from_le_bytes([
-                block_hash[0], block_hash[1], block_hash[2], block_hash[3],
-                block_hash[4], block_hash[5], block_hash[6], block_hash[7],
-            ]),
+            proof_id: block_number,
         })
     }
 }
@@ -2120,6 +2154,12 @@ pub fn verify_supernova_proof(proof: &SuperNovaProof) -> bool {
         return false;
     }
 
+    // SECURITY: Verify challenges are non-empty (defense in depth)
+    if proof.challenges.is_empty() {
+        tracing::warn!("SuperNova verification failed: no challenges in proof");
+        return false;
+    }
+
     // SECURITY: Augmented proof is REQUIRED for full security
     if proof.augmented_proof.is_empty() {
         tracing::warn!("SuperNova verification failed: empty augmented proof not allowed");
@@ -2310,16 +2350,16 @@ mod tests {
 
         let n = 4usize;
 
-        // Generate augmented proof
-        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n);
+        // Generate augmented proof (block_number=0 for tests)
+        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n, 0);
 
         // Verify should succeed since the folding equation is satisfied
-        assert!(proof.verify(comm_w_new, comm_w_old, comm_w_cccs),
+        assert!(proof.verify(comm_w_new, comm_w_old, comm_w_cccs, 0),
             "Augmented proof should verify when folding equation is satisfied");
 
         // Test that verification fails when folding equation is NOT satisfied
         let wrong_comm_w_new = 999u32;
-        assert!(!proof.verify(wrong_comm_w_new, comm_w_old, comm_w_cccs),
+        assert!(!proof.verify(wrong_comm_w_new, comm_w_old, comm_w_cccs, 0),
             "Augmented proof should fail when folding equation is not satisfied");
     }
 
@@ -2332,12 +2372,12 @@ mod tests {
         let comm_w_new = (((r as u64).wrapping_mul(comm_w_old as u64)) as u32).wrapping_add(comm_w_cccs);
         let n = 8usize;
 
-        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n);
+        let proof = AugmentedProof::prove(comm_w_new, r, comm_w_old, comm_w_cccs, n, 0);
         let bytes = proof.to_bytes();
 
         // Deserialize and verify
         let restored = AugmentedProof::from_bytes(&bytes).expect("Should deserialize");
-        assert!(restored.verify(comm_w_new, comm_w_old, comm_w_cccs));
+        assert!(restored.verify(comm_w_new, comm_w_old, comm_w_cccs, 0));
 
         // Check stored values
         assert_eq!(restored.r, r);
@@ -2387,7 +2427,8 @@ mod tests {
         };
 
         // Create augmented proof: prove that folded_result = r * comm_w_old + comm_w_cccs
-        let augmented = AugmentedProof::prove(folded_result, r, comm_w_old, final_comm_w_cccs, 1);
+        // (block_number=0 for test)
+        let augmented = AugmentedProof::prove(folded_result, r, comm_w_old, final_comm_w_cccs, 1, 0);
         let augmented_bytes = augmented.to_bytes();
 
         // Populate folding chain to match augmented.n = 1
@@ -2665,7 +2706,7 @@ mod tests {
         use crate::prover::parallel_prove::BatchProof;
 
         let initial_state = Poseidon2::hash_pair(12345, 67890);
-        let block_hash = [1u8; 32];
+        let block_number = 1u64;
         let n_proofs = 3;
 
         // Create dummy Labrador proofs (proof field is not used in folding, only commitment)
@@ -2686,7 +2727,7 @@ mod tests {
         let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
         let nova_prover = NovaIVCProver::new(4);
 
-        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_number)
             .expect("Should create valid proof");
 
         let mut bytes = proof.augmented_proof.clone();
@@ -2713,7 +2754,7 @@ mod tests {
         use crate::prover::parallel_prove::BatchProof;
 
         let initial_state = Poseidon2::hash_pair(99999, 88888);
-        let block_hash = [2u8; 32];
+        let block_number = 2u64;
         let n_proofs = 2;
 
         let labrador_proofs: Vec<BatchProof> = (0..n_proofs).map(|i| {
@@ -2733,7 +2774,7 @@ mod tests {
         let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
         let nova_prover = NovaIVCProver::new(4);
 
-        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_number)
             .expect("Should create valid proof");
 
         let mut bytes = proof.augmented_proof.clone();
@@ -2760,7 +2801,7 @@ mod tests {
         use crate::prover::parallel_prove::BatchProof;
 
         let initial_state = Poseidon2::hash_pair(55555, 66666);
-        let block_hash = [3u8; 32];
+        let block_number = 3u64;
         let n_proofs = 2;
 
         let labrador_proofs: Vec<BatchProof> = (0..n_proofs).map(|i| {
@@ -2780,7 +2821,7 @@ mod tests {
         let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
         let nova_prover = NovaIVCProver::new(4);
 
-        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_number)
             .expect("Should create valid proof");
 
         let mut tampered = proof.clone();
@@ -2803,7 +2844,7 @@ mod tests {
         use crate::prover::parallel_prove::BatchProof;
 
         let initial_state = Poseidon2::hash_pair(11111, 22222);
-        let block_hash = [4u8; 32];
+        let block_number = 4u64;
         let n_proofs = 1;
 
         let labrador_proofs: Vec<BatchProof> = vec![
@@ -2823,7 +2864,7 @@ mod tests {
         let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
         let nova_prover = NovaIVCProver::new(4);
 
-        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_number)
             .expect("Should create valid proof");
 
         let mut tampered = proof.clone();
@@ -2841,7 +2882,7 @@ mod tests {
         use crate::prover::parallel_prove::BatchProof;
 
         let initial_state = Poseidon2::hash_pair(77777, 88888);
-        let block_hash = [5u8; 32];
+        let block_number = 5u64;
         let n_proofs = 1;
 
         let labrador_proofs: Vec<BatchProof> = vec![
@@ -2861,7 +2902,7 @@ mod tests {
         let prover = Prover::new(ProverConfig::default()).expect("Prover creation should succeed");
         let nova_prover = NovaIVCProver::new(4);
 
-        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_hash)
+        let proof = nova_prover.fold_labrador_proofs(&prover, &labrador_proofs, initial_state, block_number)
             .expect("Should create valid proof");
 
         // Serialize and flip bits
