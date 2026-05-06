@@ -144,33 +144,20 @@ impl Poseidon2 {
     }
 
     /// Hash two field elements (for Merkle tree leaves)
+    /// Uses full Poseidon2 hash (16 rounds) for collision resistance
     pub fn hash_pair(a: u32, b: u32) -> u32 {
-        let input = [a, b, 0, 0, 0, 0, 0, 0];
-        let mut state = Poseidon2State::new(input);
+        // Pack two field elements into bytes for full hash
+        let mut input = [0u8; 32];
+        input[0..4].copy_from_slice(&a.to_le_bytes());
+        input[4..8].copy_from_slice(&b.to_le_bytes());
+        // Domain separator "HP2PAIR1" (8 bytes) to prevent collisions
+        input[8..16].copy_from_slice(b"HP2PAIR1");
 
-        // Single permutation round using cached constants
-        let constants = get_round_constants();
-        for i in 0..HASH_WIDTH {
-            state.elements[i] = state.elements[i].wrapping_add(constants[i]) % FIELD_Q as u32;
-            let x = state.elements[i] as u64;
-            let x2 = (x * x) % FIELD_Q as u64;
-            let x4 = (x2 * x2) % FIELD_Q as u64;
-            state.elements[i] = ((x4 * x) % FIELD_Q as u64) as u32;
-        }
+        // Use full Poseidon2 hash for security
+        let hash = Self::hash(&input);
 
-        // Apply MDS using cached matrix
-        let mds = get_mds_matrix();
-        let mut new = [0u32; HASH_WIDTH];
-        for i in 0..HASH_WIDTH {
-            let mut sum = 0u64;
-            for j in 0..HASH_WIDTH {
-                sum = (sum + (mds[i][j] as u64) * (state.elements[j] as u64)) % FIELD_Q as u64;
-            }
-            new[i] = sum as u32;
-        }
-
-        // Return first element as hash
-        new[0]
+        // Return first field element
+        u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]])
     }
 
     /// Compute Merkle root from leaves

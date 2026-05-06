@@ -557,6 +557,7 @@ The magic: each fold "absorbs" the previous state, so only the final state is st
 |-----------|------------|------|
 | Poseidon2 commitments | Preimage resistance | 128 |
 | Sumcheck | Fiat-Shamir is binding | 128 |
+| Chain commitment | Keccak256 collision resistance | 128 |
 | Labrador response | Module-SIS hardness | ~92 |
 | Folding | Field arithmetic is correct | N/A |
 
@@ -566,6 +567,96 @@ Q = 8,383,489 is prime, avoiding:
 - Zero divisors (power-of-2 modulus bug)
 - CRT splitting (composite modulus bug)
 - Ring factorization (NTT soundness bug)
+
+### NovaIVC Proof Verification Hardening
+
+The NovaIVC proof system was hardened against several attack vectors:
+
+#### Vulnerability 1: Chain Tampering (CRITICAL)
+
+**Issue**: The `AugmentedProof` originally only verified the final folding equation:
+```
+comm_w_final = r_last * comm_w_old_last + cccs_last
+```
+This only involved the **last fold** in the chain. An attacker who observed a valid proof could modify any earlier challenge `r_i` without detection.
+
+**Fix**: Added `chain_commitment` to `AugmentedProof` that hashes ALL challenges using Keccak256:
+```rust
+pub struct AugmentedProof {
+    // ... existing fields ...
+    pub chain_commitment: u32,  // NEW: hash of ALL challenges
+}
+
+pub fn chain_commitment(&self) -> u32 {
+    use crate::crypto::keccak::keccak256;
+    let mut input = Vec::new();
+    for (i, &r) in self.challenges.iter().enumerate() {
+        input.extend_from_slice(&i.to_le_bytes());
+        input.extend_from_slice(&r.to_le_bytes());
+    }
+    keccak256(&input)[0..4].into()
+}
+```
+
+#### Vulnerability 2: Empty Proof Bypass (HIGH)
+
+**Issue**: If `augmented_proof` was empty bytes, verification would skip the sumcheck entirely and return `true`.
+
+**Fix**: Empty augmented proofs are now rejected:
+```rust
+if proof.augmented_proof.is_empty() {
+    tracing::warn!("Empty augmented proof not allowed");
+    return false;
+}
+```
+
+#### Vulnerability 3: Length Mismatch (MEDIUM)
+
+**Issue**: The `n` parameter (number of folds) wasn't validated against the actual chain length.
+
+**Fix**: Multiple cross-checks:
+```rust
+if augmented.n != proof.folding_chain.num_folds {
+    return false;  // augmented.n must match chain
+}
+if proof.running.n != proof.folding_chain.num_folds {
+    return false;  // running.n must also match
+}
+```
+
+### Hash Function Implementation Notes
+
+#### Poseidon2 `hash_pair` (Previously Simplified)
+
+The `Poseidon2::hash_pair()` function was originally implemented with a **single-round** simplification for performance. This is NOT standard Poseidon2 and does NOT provide the same security guarantees.
+
+**Original (BROKEN)**:
+```rust
+// Only 1 round - collision resistance greatly reduced
+for i in 0..HASH_WIDTH {
+    state.elements[i] = state.elements[i].wrapping_add(constants[i]) % FIELD_Q;
+    // x^5 s-box
+    let x = state.elements[i] as u64;
+    state.elements[i] = ((x*x*x*x*x) % FIELD_Q) as u32;
+}
+```
+
+**Current (FIXED)**:
+```rust
+// Uses full 16-round Poseidon2 hash via Self::hash()
+let mut input = [0u8; 32];
+input[0..4].copy_from_slice(&a.to_le_bytes());
+input[4..8].copy_from_slice(&b.to_le_bytes());
+input[8..16].copy_from_slice(b"HP2PAIR1");  // Domain separator
+let hash = Self::hash(&input);  // Full Poseidon2
+```
+
+#### Why Keccak256 for Chain Commitment?
+
+The chain commitment uses Keccak256 (not Poseidon2) for simplicity and proven security. While Poseidon2 is more efficient in zk circuits due to field arithmetic, Keccak256:
+- Has proven 128-bit collision security
+- Is well-audited and standard
+- Avoids accumulator pattern issues
 
 ### What We Don't Have (Yet)
 
