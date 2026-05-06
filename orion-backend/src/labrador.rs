@@ -74,6 +74,13 @@ impl LabradorProver {
             return Err(BackendError::AneError("Labrador prove failed".to_string()));
         }
 
+        // SECURITY: Validate FFI output to detect corrupted/malformed proofs
+        if !proof.is_valid() {
+            return Err(BackendError::AneError(
+                "Labrador prove returned invalid proof data - possible FFI corruption".to_string()
+            ));
+        }
+
         tracing::debug!("Labrador prove completed in {:?}", elapsed);
 
         Ok(proof)
@@ -153,6 +160,15 @@ impl LabradorProver {
 
         if !success {
             return Err(BackendError::AneError("Labrador batch prove failed".to_string()));
+        }
+
+        // SECURITY: Validate all proofs returned by FFI
+        for (i, proof) in proofs.iter().enumerate() {
+            if !proof.is_valid() {
+                return Err(BackendError::AneError(
+                    format!("Labrador batch prove returned invalid proof at index {} - possible FFI corruption", i)
+                ));
+            }
         }
 
         tracing::debug!("Labrador batch prove completed {} proofs in {:?}", num_witnesses, elapsed);

@@ -103,6 +103,25 @@ pub struct LatticeZKProof {
     pub response: [uint64_t; 4],
 }
 
+impl LatticeZKProof {
+    /// SECURITY: Validate proof fields to detect corrupted output
+    pub fn is_valid(&self) -> bool {
+        let comm_all_zero = self.commitment.iter().all(|&b| b == 0);
+        if comm_all_zero {
+            return false;
+        }
+        let chal_all_zero = self.challenge.iter().all(|&b| b == 0);
+        if chal_all_zero {
+            return false;
+        }
+        let resp_all_zero = self.response.iter().all(|&b| b == 0);
+        if resp_all_zero {
+            return false;
+        }
+        true
+    }
+}
+
 // ============================================================================
 // Mock State
 // ============================================================================

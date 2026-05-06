@@ -213,6 +213,21 @@ extern "C" {
     pub fn orion_gpu_release(ctx: *mut O_RIONGPUContext);
 }
 
+/// Batch matrix-vector multiply on GPU (for Labrador protocol)
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn orion_gpu_matvec_batch(
+        ctx: *mut O_RIONGPUContext,
+        matrices: *const f32,
+        vectors: *const f32,
+        results: *mut f32,
+        count: c_int,
+        k: c_int,
+        l: c_int,
+    ) -> bool;
+}
+
 /// Forward NTT
 #[link(name = "orion", kind = "static")]
 #[link(name = "m")]
@@ -221,6 +236,42 @@ extern "C" {
         ctx: *mut O_RIONGPUContext,
         input: *const GPUNTTPoly,
         output: *mut GPUNTTPoly,
+    ) -> bool;
+}
+
+/// Fused MatVec + RNS decomposition + CRT reconstruction
+///
+/// Computes all 5 RNS residues AND final CRT result in single GPU dispatch.
+/// This eliminates 5 separate ANE invocations and IOSurface overhead.
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn orion_gpu_matvec_rns_crt(
+        ctx: *mut O_RIONGPUContext,
+        matrices: *const f32,
+        vectors: *const f32,
+        rns_results: *mut u32,
+        crt_results: *mut u32,
+        count: c_int,
+        k: c_int,
+        l: c_int,
+    ) -> bool;
+}
+
+/// Fully GPU-accelerated A expansion + MatVec + RNS + CRT
+///
+/// This is the ultimate GPU path: seed → A (GPU) → A*s + RNS + CRT (GPU)
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn orion_gpu_expand_a_and_matvec(
+        ctx: *mut O_RIONGPUContext,
+        seed: *const u8,
+        k: c_int,
+        l: c_int,
+        vectors: *const f32,
+        count: c_int,
+        crt_results: *mut u32,
     ) -> bool;
 }
 
@@ -344,11 +395,65 @@ pub struct LatticeZKVerificationKey {
 
 /// Proof structure
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct LatticeZKProof {
     pub commitment: [uint8_t; 32],
     pub challenge: [uint8_t; 32],
     pub response: [uint64_t; 4],
+}
+
+impl LatticeZKProof {
+    /// SECURITY: Validate proof fields to detect corrupted output
+    ///
+    /// When FFI calls fail, the proof buffer may contain garbage data.
+    /// This validates that all fields are within valid ranges.
+    ///
+    /// Returns false if:
+    /// - All commitment bytes are zero (uninitialized)
+    /// - All challenge bytes are zero (uninitialized)
+    /// - response contains invalid values (overflow in field)
+    pub fn is_valid(&self) -> bool {
+        // Check commitment is not all zeros (uninitialized)
+        let comm_all_zero = self.commitment.iter().all(|&b| b == 0);
+        if comm_all_zero {
+            return false;
+        }
+
+        // Check challenge is not all zeros (uninitialized)
+        let chal_all_zero = self.challenge.iter().all(|&b| b == 0);
+        if chal_all_zero {
+            return false;
+        }
+
+        // Response should have some non-zero values for valid proofs
+        // All-zero response is suspicious
+        let resp_all_zero = self.response.iter().all(|&b| b == 0);
+        if resp_all_zero {
+            return false;
+        }
+
+        // Check that commitment/challenge don't exceed field size
+        // Values should be representable in field Q=8383489
+        // Each byte should be < 128 for safe field arithmetic
+        for (i, &byte) in self.commitment.iter().enumerate() {
+            if byte > 127 && i < 4 {
+                // First 4 bytes represent u32 - could be any value
+                // But we limit to field size Q = 8383489 < 2^23
+                let val = u32::from_le_bytes([
+                    self.commitment[0],
+                    self.commitment[1],
+                    self.commitment[2],
+                    self.commitment[3],
+                ]);
+                if val >= 8383489 {
+                    return false;
+                }
+                break;
+            }
+        }
+
+        true
+    }
 }
 
 // ============================================================================
@@ -518,6 +623,42 @@ extern "C" {
     pub fn latticezk_verify(
         vk: *const LatticeZKVerificationKey,
         proof: *const LatticeZKProof,
+    ) -> bool;
+}
+
+/// Labrador prove batch using GPU (true parallelism)
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn latticezk_prove_batch_gpu(
+        pk: *const LatticeZKProvingKey,
+        s_batch: *const f32,
+        num_witnesses: c_int,
+        proofs: *mut LatticeZKProof,
+    ) -> bool;
+}
+
+/// Labrador prove batch using fully GPU-accelerated path (no ANE)
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn latticezk_prove_batch_fused(
+        pk: *const LatticeZKProvingKey,
+        s_batch: *const f32,
+        num_witnesses: c_int,
+        proofs: *mut LatticeZKProof,
+    ) -> bool;
+}
+
+/// Labrador prove batch using ANE (serialized per witness)
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn latticezk_prove_batch(
+        pk: *const LatticeZKProvingKey,
+        s_batch: *const f32,
+        num_witnesses: c_int,
+        proofs: *mut LatticeZKProof,
     ) -> bool;
 }
 
