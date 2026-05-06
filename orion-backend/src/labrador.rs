@@ -75,7 +75,8 @@ impl LabradorProver {
         }
 
         // SECURITY: Validate FFI output to detect corrupted/malformed proofs
-        if !proof.is_valid() {
+        // ANE path (not GPU), so gpu_proof = false
+        if !proof.is_valid(false) {
             return Err(BackendError::AneError(
                 "Labrador prove returned invalid proof data - possible FFI corruption".to_string()
             ));
@@ -162,9 +163,11 @@ impl LabradorProver {
             return Err(BackendError::AneError("Labrador batch prove failed".to_string()));
         }
 
-        // SECURITY: Validate all proofs returned by FFI
+        // SECURITY: Validate proofs returned by FFI
+        // GPU path returns GPU proofs, ANE path returns ANE proofs
+        let gpu_proof = GPUContext::available();
         for (i, proof) in proofs.iter().enumerate() {
-            if !proof.is_valid() {
+            if !proof.is_valid(gpu_proof) {
                 return Err(BackendError::AneError(
                     format!("Labrador batch prove returned invalid proof at index {} - possible FFI corruption", i)
                 ));
@@ -231,6 +234,16 @@ impl LabradorProver {
             return Err(BackendError::AneError("Labrador GPU batch prove failed".to_string()));
         }
 
+        // SECURITY: Validate GPU proofs - GPU may return all-zero response legitimately,
+        // but commitment and challenge must be non-zero
+        for (i, proof) in proofs.iter().enumerate() {
+            if !proof.is_valid(true) {  // true = GPU proof
+                return Err(BackendError::AneError(
+                    format!("Labrador GPU batch prove returned invalid proof at index {} - possible FFI corruption", i)
+                ));
+            }
+        }
+
         tracing::debug!("Labrador GPU batch prove completed {} proofs in {:?}", num_witnesses, elapsed);
 
         Ok(proofs)
@@ -290,6 +303,16 @@ pub fn prove_batch_fused(&self, witnesses: &[&[f32]]) -> Result<Vec<LatticeZKPro
 
     if !success {
         return Err(BackendError::AneError("Labrador fused batch prove failed".to_string()));
+    }
+
+    // SECURITY: Validate GPU proofs - GPU may return all-zero response legitimately,
+    // but commitment and challenge must be non-zero
+    for (i, proof) in proofs.iter().enumerate() {
+        if !proof.is_valid(true) {  // true = GPU proof
+            return Err(BackendError::AneError(
+                format!("Labrador fused batch prove returned invalid proof at index {} - possible FFI corruption", i)
+            ));
+        }
     }
 
     tracing::debug!("Labrador fused batch prove completed {} proofs in {:?}", num_witnesses, elapsed);

@@ -408,11 +408,16 @@ impl LatticeZKProof {
     /// When FFI calls fail, the proof buffer may contain garbage data.
     /// This validates that all fields are within valid ranges.
     ///
+    /// # Arguments
+    /// * `gpu_proof` - If true, allows all-zero response (GPU kernel may legitimately
+    ///                  return all-zero response for certain proof types). Commitment
+    ///                  and challenge are still validated as they're derived cryptographically.
+    ///
     /// Returns false if:
     /// - All commitment bytes are zero (uninitialized)
     /// - All challenge bytes are zero (uninitialized)
-    /// - response contains invalid values (overflow in field)
-    pub fn is_valid(&self) -> bool {
+    /// - For non-GPU: response is all zeros (suspicious)
+    pub fn is_valid(&self, gpu_proof: bool) -> bool {
         // SECURITY: Validate proof fields to detect corrupted output
         //
         // When FFI calls fail, the proof buffer may contain garbage data.
@@ -421,7 +426,7 @@ impl LatticeZKProof {
         // Returns false if:
         // - All commitment bytes are zero (uninitialized)
         // - All challenge bytes are zero (uninitialized)
-        // - All response bytes are zero (suspicious)
+        // - For non-GPU: response is all zeros (suspicious)
         //
         // NOTE: Commitment and response are [u8; 32] arbitrary cryptographic values.
         // They do NOT represent field elements directly - they're reduced mod Q
@@ -445,12 +450,15 @@ impl LatticeZKProof {
         // Response should have some non-zero values for valid proofs
         // All-zero response is suspicious (could indicate FFI failure)
         //
-        // NOTE: GPU kernel may legitimately return all-zero response for certain proof types.
+        // Exception: GPU kernel may legitimately return all-zero response for certain proof types.
         // The commitment and challenge are still valid and can be verified.
-        // We skip the failing check to avoid rejecting valid GPU proofs.
-        // Debug logging can be enabled if needed for troubleshooting.
-        // let resp_all_zero = self.response.iter().all(|&b| b == 0);
-        // if resp_all_zero { return false; }
+        // We allow this case only when explicitly flagged as GPU proof.
+        if !gpu_proof {
+            let resp_all_zero = self.response.iter().all(|&v| v == 0);
+            if resp_all_zero {
+                return false;
+            }
+        }
 
         // NOTE: We do NOT check "value < Q" for commitment/response because:
         // 1. Commitment is a 256-bit hash output, not a field element
