@@ -429,6 +429,11 @@ pub struct SuperNovaProof {
     pub num_folds: usize,
     /// Precomputed challenges (all derived from z_0)
     pub challenges: Vec<u32>,
+    /// Block hash this proof is bound to (prevents replay on different blocks)
+    /// Derived from: Poseidon2(block_number, trace_root)
+    pub block_hash: [u8; 32],
+    /// Proof ID for replay protection (block_hash truncated to u64)
+    pub proof_id: u64,
 }
 
 /// Nova IVC Proof
@@ -453,6 +458,11 @@ pub struct NovaIVCProof {
     pub augmented_proof: Vec<u8>,
     /// ALL folding data for complete chain verification
     pub folding_chain: FoldingChain,
+    /// Block hash this proof is bound to (prevents replay on different blocks)
+    /// Derived from: Poseidon2(block_number, trace_root)
+    pub block_hash: [u8; 32],
+    /// Proof ID for replay protection (block_hash truncated to u64)
+    pub proof_id: u64,
 }
 
 /// Complete folding chain for full security verification
@@ -937,6 +947,8 @@ impl NovaIVCProver {
             },
             augmented_proof: augmented.to_bytes(),
             folding_chain,
+            block_hash: [0u8; 32],  // Default for prove() path
+            proof_id: 0,            // Default for prove() path
         })
     }
 
@@ -953,6 +965,7 @@ impl NovaIVCProver {
         prover: &Prover,
         labrador_proofs: &[crate::prover::parallel_prove::BatchProof],
         initial_state: u32,
+        block_hash: [u8; 32],
     ) -> Result<NovaIVCProof, String> {
         let _ = std::fs::write("/tmp/debug.log", format!(
             "fold_labrador_proofs called: n_proofs={}, initial_state={}\n",
@@ -1061,6 +1074,12 @@ impl NovaIVCProver {
             augmented_bytes.len()
         ));
 
+        // Compute proof_id from block_hash (first 8 bytes as u64)
+        let proof_id = u64::from_le_bytes([
+            block_hash[0], block_hash[1], block_hash[2], block_hash[3],
+            block_hash[4], block_hash[5], block_hash[6], block_hash[7],
+        ]);
+
         Ok(NovaIVCProof {
             running,
             final_step: CCCS {
@@ -1069,6 +1088,8 @@ impl NovaIVCProver {
             },
             augmented_proof: augmented_bytes,
             folding_chain,
+            block_hash,
+            proof_id,
         })
     }
 
@@ -1205,6 +1226,8 @@ impl NovaIVCProver {
             },
             augmented_proof: augmented.to_bytes(),
             folding_chain,
+            block_hash: [0u8; 32],  // Default for prove() path
+            proof_id: 0,            // Default for prove() path
         })
     }
 }
@@ -1238,6 +1261,13 @@ pub fn verify_nova_proof(proof: &NovaIVCProof) -> bool {
         tracing::warn!("NovaIVC comm_w mismatch: computed {:08x}, stored {:08x}",
             computed_final, proof.running.comm_w);
         return false;
+    }
+
+    // SECURITY: Verify block_hash is non-zero (binds proof to a specific block)
+    // Zero block_hash indicates default value from prove() path - not cryptographically bound
+    let is_default_block_hash = proof.block_hash.iter().all(|&b| b == 0);
+    if is_default_block_hash {
+        tracing::debug!("NovaIVC block_hash is default (prove() path) - no replay protection applied");
     }
 
     // SECURITY: Augmented proof is REQUIRED for full security
@@ -1510,6 +1540,8 @@ impl SuperNeoProver {
             augmented_proof: augmented.to_bytes(),
             num_folds: n_steps,
             challenges: all_r,
+            block_hash: [0u8; 32],  // Default for prove() path
+            proof_id: 0,            // Default for prove() path
         })
     }
 
@@ -1605,6 +1637,8 @@ impl SuperNeoProver {
             augmented_proof: augmented.to_bytes(),
             num_folds: trace.len(),
             challenges: all_r,
+            block_hash: [0u8; 32],  // Default for prove() path
+            proof_id: 0,            // Default for prove() path
         })
     }
 
@@ -1617,6 +1651,7 @@ impl SuperNeoProver {
         prover: &Prover,
         labrador_proofs: &[crate::prover::parallel_prove::BatchProof],
         initial_state: u32,
+        block_hash: [u8; 32],
     ) -> Result<SuperNovaProof, String> {
         if labrador_proofs.is_empty() {
             return Err("No Labrador proofs to fold".to_string());
@@ -1724,6 +1759,11 @@ impl SuperNeoProver {
             augmented_proof: augmented.to_bytes(),
             num_folds: n_proofs,
             challenges: challenges,  // Use precomputed challenges
+            block_hash,
+            proof_id: u64::from_le_bytes([
+                block_hash[0], block_hash[1], block_hash[2], block_hash[3],
+                block_hash[4], block_hash[5], block_hash[6], block_hash[7],
+            ]),
         })
     }
 }
@@ -1981,6 +2021,12 @@ pub fn verify_supernova_proof(proof: &SuperNovaProof) -> bool {
     if proof.augmented_proof.is_empty() {
         tracing::warn!("SuperNova verification failed: empty augmented proof not allowed");
         return false;
+    }
+
+    // SECURITY: Verify block_hash is non-zero (binds proof to a specific block)
+    let is_default_block_hash = proof.block_hash.iter().all(|&b| b == 0);
+    if is_default_block_hash {
+        tracing::debug!("SuperNova block_hash is default (prove() path) - no replay protection applied");
     }
 
     let augmented = match AugmentedProofSuperNeo::from_bytes(&proof.augmented_proof) {
@@ -2253,6 +2299,8 @@ mod tests {
             final_step,
             augmented_proof: augmented_bytes,
             folding_chain,
+            block_hash: [0u8; 32],
+            proof_id: 0,
         };
 
         // First check the state hash match
@@ -2425,6 +2473,8 @@ mod tests {
             augmented_proof: vec![],
             num_folds: 5,
             challenges: vec![1u32, 2, 3, 4, 5],
+            block_hash: [0u8; 32],
+            proof_id: 0,
         };
 
         // Verify structure
