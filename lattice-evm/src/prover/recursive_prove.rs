@@ -474,6 +474,10 @@ pub struct FoldingChain {
     pub u_list: Vec<u32>,
 }
 
+/// Maximum number of folds allowed to prevent resource exhaustion
+/// Based on: 2^20 = ~1M iterations, reasonable for current hardware
+const MAX_NUM_FOLDS: usize = 1_000_000;
+
 impl FoldingChain {
     /// Create new empty folding chain
     pub fn new() -> Self {
@@ -488,6 +492,14 @@ impl FoldingChain {
 
     /// Add a fold to the chain
     pub fn add_fold(&mut self, r: u32, comm_w_old: u32, comm_w_cccs: u32, u: u32) {
+        // SECURITY: Reject zero/one challenges and enforce bounds
+        if r == 0 || r == 1 {
+            panic!("Invalid challenge r: {} - must be non-zero and not equal to 1", r);
+        }
+        if self.num_folds >= MAX_NUM_FOLDS {
+            panic!("FoldingChain: exceeded MAX_NUM_FOLDS limit ({}). DoS protection.", MAX_NUM_FOLDS);
+        }
+
         self.num_folds += 1;
         self.challenges.push(r);
         self.comm_w_old_list.push(comm_w_old);
@@ -586,6 +598,14 @@ impl AugmentedProof {
         comm_w_cccs: u32,
         n: usize,
     ) -> Self {
+        // SECURITY: Validate challenge r to prevent weak folding
+        // r must be non-zero and not equal to 1 (field identity)
+        // Also ensure r is in valid range [2, Q-1] where Q = 8383489
+        const Q: u32 = 8383489;
+        if r == 0 || r == 1 || r >= Q {
+            panic!("Invalid challenge r: {} - must be in range [2, Q-1]", r);
+        }
+
         // Build constraint polynomial: P(x) = comm_w_new - r*comm_w_old - comm_w_cccs = 0
         // Since this is a constant polynomial (no variables), we set all evaluations to the constraint value
         let num_vars = (n.next_power_of_two().max(1)).trailing_zeros() as usize;
@@ -1170,33 +1190,60 @@ pub fn verify_nova_proof(proof: &NovaIVCProof) -> bool {
         return false;
     }
 
-    // Verify augmented proof if present
-    if !proof.augmented_proof.is_empty() {
-        if let Some(augmented) = AugmentedProof::from_bytes(&proof.augmented_proof) {
-            // Verify the final folding equation using running.comm_w (the accumulated value)
-            // The accumulated running.comm_w should equal: r * comm_w_old + comm_w_cccs
-            let mul_result = (augmented.r as u64).wrapping_mul(augmented.comm_w_old as u64);
-            let expected_comm_w = mul_result.wrapping_add(augmented.comm_w_cccs as u64) as u32;
-
-            // Check against the accumulated running.comm_w
-            if proof.running.comm_w != expected_comm_w {
-                tracing::warn!("NovaIVC augmented proof: comm_w mismatch");
-                return false;
-            }
-
-            // Verify sumcheck proof (uses stored comm_w_old and comm_w_cccs internally)
-            let verify_ok = augmented.verify(proof.running.comm_w, augmented.comm_w_old, augmented.comm_w_cccs);
-            if !verify_ok {
-                tracing::warn!("NovaIVC sumcheck proof verification failed");
-                return false;
-            }
-
-            return true;
-        }
-        // If deserialization fails, fall back to basic check
+    // SECURITY: Augmented proof is REQUIRED for full security
+    // Empty augmented proof would skip sumcheck verification entirely
+    if proof.augmented_proof.is_empty() {
+        tracing::warn!("NovaIVC verification failed: empty augmented proof not allowed");
+        return false;
     }
 
-    // Folding chain verified, sumcheck verified
+    let augmented = match AugmentedProof::from_bytes(&proof.augmented_proof) {
+        Some(a) => a,
+        None => {
+            tracing::warn!("NovaIVC verification failed: cannot deserialize augmented proof");
+            return false;
+        }
+    };
+
+    // SECURITY: Validate challenge r is in safe range
+    const Q: u32 = 8383489;
+    if augmented.r == 0 || augmented.r == 1 || augmented.r >= Q {
+        tracing::warn!("NovaIVC verification failed: invalid challenge r = {}", augmented.r);
+        return false;
+    }
+
+    // SECURITY: Verify n matches chain length to prevent length mismatch attacks
+    if augmented.n != proof.folding_chain.num_folds {
+        tracing::warn!("NovaIVC augmented proof: n mismatch ({} vs {})",
+            augmented.n, proof.folding_chain.num_folds);
+        return false;
+    }
+
+    // SECURITY: Also verify running.n matches (defense in depth)
+    if proof.running.n != proof.folding_chain.num_folds {
+        tracing::warn!("NovaIVC running.n mismatch ({} vs {})",
+            proof.running.n, proof.folding_chain.num_folds);
+        return false;
+    }
+
+    // Verify the final folding equation using running.comm_w (the accumulated value)
+    // The accumulated running.comm_w should equal: r * comm_w_old + comm_w_cccs
+    let mul_result = (augmented.r as u64).wrapping_mul(augmented.comm_w_old as u64);
+    let expected_comm_w = mul_result.wrapping_add(augmented.comm_w_cccs as u64) as u32;
+
+    // Check against the accumulated running.comm_w
+    if proof.running.comm_w != expected_comm_w {
+        tracing::warn!("NovaIVC augmented proof: comm_w mismatch");
+        return false;
+    }
+
+    // Verify sumcheck proof (uses stored comm_w_old and comm_w_cccs internally)
+    let verify_ok = augmented.verify(proof.running.comm_w, augmented.comm_w_old, augmented.comm_w_cccs);
+    if !verify_ok {
+        tracing::warn!("NovaIVC sumcheck proof verification failed");
+        return false;
+    }
+
     true
 }
 
@@ -1844,26 +1891,51 @@ impl AugmentedProofSuperNeo {
 pub fn verify_supernova_proof(proof: &SuperNovaProof) -> bool {
     // Check that final state matches running state
     if proof.running.u != proof.final_step.u {
+        tracing::warn!("SuperNova verify failed: final_u != running.u");
         return false;
     }
 
-    // Verify augmented proof if present
-    if !proof.augmented_proof.is_empty() {
-        if let Some(augmented) = AugmentedProofSuperNeo::from_bytes(&proof.augmented_proof) {
-            // Verify the folding equation using running.comm_w
-            // For SuperNeo: comm_w_new should satisfy the multifolding equation
-            let verify_ok = augmented.verify_multi(proof.running.comm_w);
-            if !verify_ok {
-                return false;
-            }
+    // SECURITY: Augmented proof is REQUIRED for full security
+    if proof.augmented_proof.is_empty() {
+        tracing::warn!("SuperNova verification failed: empty augmented proof not allowed");
+        return false;
+    }
 
-            // Also verify challenges match
-            if proof.challenges.len() != augmented.r_multi.len() + 1 {
-                return false;
-            }
-
-            return true;
+    let augmented = match AugmentedProofSuperNeo::from_bytes(&proof.augmented_proof) {
+        Some(a) => a,
+        None => {
+            tracing::warn!("SuperNova verification failed: cannot deserialize augmented proof");
+            return false;
         }
+    };
+
+    // SECURITY: Validate primary challenge r is in safe range
+    const Q: u32 = 8383489;
+    if augmented.r_primary == 0 || augmented.r_primary == 1 || augmented.r_primary >= Q {
+        tracing::warn!("SuperNova verification failed: invalid primary challenge r = {}", augmented.r_primary);
+        return false;
+    }
+
+    // SECURITY: Validate all multi-fold challenges
+    for r in &augmented.r_multi {
+        if *r == 0 || *r == 1 || *r >= Q {
+            tracing::warn!("SuperNova verification failed: invalid multi challenge r = {}", r);
+            return false;
+        }
+    }
+
+    // Verify the folding equation using running.comm_w
+    // For SuperNeo: comm_w_new should satisfy the multifolding equation
+    let verify_ok = augmented.verify_multi(proof.running.comm_w);
+    if !verify_ok {
+        tracing::warn!("SuperNova multifolding verification failed");
+        return false;
+    }
+
+    // Also verify challenges match
+    if proof.challenges.len() != augmented.r_multi.len() + 1 {
+        tracing::warn!("SuperNova challenge count mismatch");
+        return false;
     }
 
     true

@@ -5,6 +5,7 @@
 use lattice_evm::prover::{Prover, ProverConfig};
 use lattice_evm::prover::recursive_prove::{NovaIVCProver, verify_nova_proof, NovaIVCProof, AugmentedProof, SuperNeoProver, verify_supernova_proof, SuperNovaProof};
 use lattice_evm::evm::{execute_bytecode, TraceRow};
+use lattice_evm::crypto::Poseidon2;
 use std::time::Instant;
 use bincode;
 
