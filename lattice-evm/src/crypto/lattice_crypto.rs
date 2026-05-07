@@ -51,8 +51,13 @@ use thiserror::Error;
 
 pub mod dilithium_merkle;
 pub mod lattice_fiat_shamir;
+pub mod lattice_merkle;
 pub mod benchmarks;
 
 pub use dilithium_merkle::{LatticeMerkleCommitment, LatticeMerkleNode, build_lattice_merkle_tree};
 pub use lattice_fiat_shamir::{LatticeHash, LatticeFiatShamirConfig};
+pub use lattice_merkle::{
+    build_lwe_merkle_tree, generate_membership_proof, get_root, verify_membership_proof,
+    LatticeMerkleNode as LatticeMerkleNodeNew,
+};
 pub use benchmarks::run_all_benchmarks;

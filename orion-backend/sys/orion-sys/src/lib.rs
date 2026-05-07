@@ -641,6 +641,18 @@ extern "C" {
     ) -> bool;
 }
 
+/// Labrador verify batch (parallel verification)
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn latticezk_verify_batch(
+        vk: *const LatticeZKVerificationKey,
+        proofs: *const LatticeZKProof,
+        num_proofs: c_int,
+        results: *mut bool,
+    ) -> bool;
+}
+
 /// Labrador prove batch using GPU (true parallelism)
 #[link(name = "orion", kind = "static")]
 #[link(name = "m")]
@@ -698,6 +710,34 @@ extern "C" {
         k: c_int,
         l: c_int,
     );
+}
+
+/// LWE-based hash function for quantum-resistant Fiat-Shamir
+///
+/// Uses the same LWE problem as Labrador proving:
+/// H(m) = Compress(A * m mod q)
+///
+/// This provides quantum-resistant hashing where:
+/// - A is a public random matrix (expanded from domain-specific seed)
+/// - m is the message encoded as a vector
+/// - Output is a compressed digest (first element of result)
+///
+/// Parameters:
+/// - domain_seed: domain separator seed (e.g., b"nova-folding" for NovaIVC)
+/// - input: message elements
+/// - input_len: number of message elements
+/// - output: hash digest output (first element used)
+/// - q: field modulus (e.g., 8383489 for our field)
+#[link(name = "orion", kind = "static")]
+#[link(name = "m")]
+extern "C" {
+    pub fn latticezk_hash_lwe(
+        domain_seed: *const uint8_t,
+        input: *const uint32_t,
+        input_len: uint32_t,
+        output: *mut uint32_t,
+        q: uint64_t,
+    ) -> bool;
 }
 
 // ============================================================================

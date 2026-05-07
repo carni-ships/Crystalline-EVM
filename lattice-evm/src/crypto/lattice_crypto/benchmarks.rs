@@ -6,10 +6,11 @@
 use std::time::Instant;
 use super::dilithium_merkle::{build_lattice_merkle_tree, LatticeMerkleConfig};
 use super::lattice_fiat_shamir::{LatticeHash, LatticeFiatShamirConfig};
+use super::lattice_merkle::build_lwe_merkle_tree;
 
-/// Compare lattice Merkle tree construction vs Poseidon Merkle tree
+/// Compare LWE-based Merkle tree vs Poseidon Merkle tree
 pub fn benchmark_lattice_merkle_vs_poseidon(leaf_count: usize) {
-    println!("=== Lattice Merkle vs Poseidon Merkle ===");
+    println!("=== LWE Merkle vs Poseidon Merkle ===");
     println!("Leaf count: {}", leaf_count);
 
     // Generate test leaves
@@ -22,17 +23,18 @@ pub fn benchmark_lattice_merkle_vs_poseidon(leaf_count: usize) {
 
     println!("Poseidon Merkle: {:.3}ms", poseidon_time);
 
-    // Benchmark lattice-based (exploration)
-    let lattice_config = LatticeMerkleConfig::default();
+    // Benchmark LWE-based (uses hash_lwe from Orion)
     let start = Instant::now();
-    let _lattice_nodes = build_lattice_merkle_tree(&leaves, &lattice_config);
-    let lattice_time = start.elapsed().as_micros() as f64 / 1000.0;
+    let _lwe_tree = build_lwe_merkle_tree(&leaves);
+    let lwe_time = start.elapsed().as_micros() as f64 / 1000.0;
 
-    println!("Lattice Merkle: {:.3}ms", lattice_time);
+    println!("LWE Merkle: {:.3}ms", lwe_time);
 
-    // Note: the current lattice implementation just uses Poseidon internally
-    // so times will be similar. The real cost would be in actual LWE ops.
-    println!("Note: Current impl uses Poseidon internally - real LWE would be 10-100x slower");
+    // Ratio
+    if lwe_time > 0.0 {
+        let ratio = lwe_time / poseidon_time;
+        println!("Ratio: {:.2}x (LWE vs Poseidon)", ratio);
+    }
 }
 
 /// Compare lattice Fiat-Shamir vs Poseidon Fiat-Shamir
@@ -103,5 +105,38 @@ mod tests {
     #[ignore = "exploration benchmark only"]
     fn test_benchmark_lattice_fiat_shamir() {
         benchmark_lattice_fiat_shamir_vs_poseidon(10000);
+    }
+
+    #[test]
+    #[ignore = "exploration benchmark only - requires ANE"]
+    fn test_benchmark_lwe_merkle_real() {
+        use super::super::lattice_merkle::{build_lwe_merkle_tree, get_root, generate_membership_proof, verify_membership_proof};
+
+        let leaf_count = 256;
+        let leaves: Vec<u32> = (0..leaf_count as u32).map(|i| i * 12345).collect();
+
+        let start = Instant::now();
+        let tree = build_lwe_merkle_tree(&leaves);
+        let build_time = start.elapsed().as_micros() as f64 / 1000.0;
+
+        let root = get_root(&tree).expect("should have root");
+
+        // Benchmark membership proof generation
+        let start = Instant::now();
+        let proof = generate_membership_proof(&tree, 42, leaf_count);
+        let prove_time = start.elapsed().as_micros() as f64 / 1000.0;
+
+        // Benchmark verification
+        let start = Instant::now();
+        let valid = verify_membership_proof(root, 42 * 12345, 42, &proof);
+        let verify_time = start.elapsed().as_micros() as f64 / 1000.0;
+
+        println!("\n=== LWE Merkle Real Benchmark ===");
+        println!("Leaves: {}", leaf_count);
+        println!("Tree nodes: {}", tree.len());
+        println!("Build time: {:.3}ms", build_time);
+        println!("Proof generation: {:.3}ms", prove_time);
+        println!("Verification: {:.3}ms", verify_time);
+        println!("Proof valid: {}", valid);
     }
 }

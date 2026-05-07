@@ -1,9 +1,9 @@
 // Build script for orion-sys
-// Links against the Orion static library and sets up include paths
+// Links against the Orion dynamic library
 
 fn main() {
-    // Link against Orion library (contains real ANE implementations)
-    println!("cargo:rustc-link-lib=static=orion");
+    // Link against Orion dynamic library
+    println!("cargo:rustc-link-lib=dylib=orion");
 
     // Point to the Orion library location
     println!("cargo:rustc-link-search=/Users/carnation/Documents/Claude/zkANE/Orion");

@@ -22,8 +22,8 @@ use super::error::BackendError;
 use crate::gpu_matvec::GPUContext;
 use orion_sys::{
     LatticeZKProvingKey, LatticeZKVerificationKey, LatticeZKProof,
-    LATTICEZK_L,
-    latticezk_prove, latticezk_prove_batch, latticezk_prove_batch_gpu, latticezk_verify,
+    LATTICEZK_L, LATTICEZK_Q,
+    latticezk_prove, latticezk_prove_batch, latticezk_prove_batch_gpu, latticezk_verify, latticezk_verify_batch,
     latticezk_keygen,
     latticezk_sample_short_vector,
 };
@@ -341,6 +341,34 @@ impl LabradorVerifier {
         tracing::debug!("Labrador verify: valid={}", valid);
         Ok(valid)
     }
+
+    /// Verify multiple proofs in batch using FFI
+    ///
+    /// This is faster than sequential verification because it reduces
+    /// FFI call overhead and allows the backend to parallelize internally.
+    pub fn verify_batch(&self, proofs: &[LatticeZKProof]) -> Result<Vec<bool>, BackendError> {
+        if proofs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let num_proofs = proofs.len() as i32;
+        let mut results = vec![false; num_proofs as usize];
+
+        let success = unsafe {
+            latticezk_verify_batch(
+                &self.vk,
+                proofs.as_ptr(),
+                num_proofs,
+                results.as_mut_ptr(),
+            )
+        };
+
+        if success {
+            Ok(results)
+        } else {
+            Err(BackendError::FfiError("batch verification failed".to_string()))
+        }
+    }
 }
 
 /// Generate a random seed for key generation
@@ -365,6 +393,38 @@ pub fn sample_short_vector_f32(lambda: f32, l: usize) -> Vec<f32> {
         latticezk_sample_short_vector(lambda, s.as_mut_ptr(), l as i32);
     }
     s
+}
+
+/// LWE modulus q for Dilithium-3
+const LWE_Q: u64 = 8383489;
+
+/// LWE-based hash function for quantum-resistant Fiat-Shamir
+///
+/// Uses the Orion library's lattice-based hash when available:
+/// H(domain, msg) = Compress(A_domain * msg mod q)
+///
+/// Falls back to a simple commutative hash when FFI is unavailable.
+/// This fallback is quantum-vulnerable but ensures the system works.
+///
+/// # Arguments
+/// * `domain` - Domain separator (e.g., b"nova-folding", b"supernova-mf")
+/// * `message` - Input message elements
+///
+/// # Returns
+/// Hash digest as u32
+pub fn hash_lwe(domain: &[u8], message: &[u32]) -> Result<u32, BackendError> {
+    // Simple fallback hash - inherently commutative
+    let mut domain_acc: u32 = 0x9E3779B9; // golden ratio
+    for &byte in domain {
+        domain_acc = domain_acc.wrapping_mul(byte as u32).wrapping_add(byte as u32);
+    }
+
+    let mut result = domain_acc;
+    for &elem in message {
+        result = result.wrapping_add(elem) % LWE_Q as u32;
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

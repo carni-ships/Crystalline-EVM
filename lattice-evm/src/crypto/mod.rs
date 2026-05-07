@@ -7,7 +7,6 @@ pub mod keccak;
 pub mod poseidon2;
 pub mod multilinear_pcs;
 pub mod smt;
-#[cfg(feature = "lattice-crypto-exploration")]
 pub mod lattice_crypto;
 
 pub use keccak::{keccak256, keccak256_field, keccak256_u32_words, keccak256_batch_parents, keccak256_node};

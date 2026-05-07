@@ -14,6 +14,7 @@ pub mod error;
 pub mod mock_orion_sys;
 
 pub use error::BackendError;
+pub use labrador::hash_lwe;
 
 /// Field element representation (Dilithium-3 field)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
