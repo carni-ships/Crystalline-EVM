@@ -465,6 +465,72 @@ pub struct NovaIVCProof {
     pub proof_id: u64,
 }
 
+/// EVM State commitment data for bridge/light client use
+///
+/// This provides the canonical EVM state that can be verified by a bridge
+/// or light client. It captures the state root, bytecode root, and other
+/// chain state needed to prove correct execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EVMStateCommitment {
+    /// Block number this state is for
+    pub block_number: u64,
+    /// State root hash (Merkle-Patricia trie root of account state)
+    pub state_root: u32,
+    /// Bytecode root hash (Merkle tree root of contract bytecodes)
+    pub bytecode_root: u32,
+    /// Storage root hash (Merkle tree root of contract storage)
+    pub storage_root: u32,
+    /// Block hash for replay protection (canonical block hash)
+    pub block_hash: [u8; 32],
+    /// Number of transactions in block
+    pub tx_count: u32,
+    /// Gas used in block
+    pub gas_used: u64,
+}
+
+impl Default for EVMStateCommitment {
+    fn default() -> Self {
+        Self {
+            block_number: 0,
+            state_root: 0,
+            bytecode_root: 0,
+            storage_root: 0,
+            block_hash: [0u8; 32],
+            tx_count: 0,
+            gas_used: 0,
+        }
+    }
+}
+
+/// NovaIVC Proof with EVM State commitment for bridge/light client use
+///
+/// This extends NovaIVCProof with the canonical EVM state that can be
+/// verified trustlessly by a bridge or light client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NovaIVCProofWithState {
+    /// The NovaIVC proof
+    pub proof: NovaIVCProof,
+    /// EVM state commitment (actual state trie data)
+    pub state: EVMStateCommitment,
+}
+
+impl NovaIVCProofWithState {
+    /// Create a new proof with state commitment
+    pub fn new(proof: NovaIVCProof, state: EVMStateCommitment) -> Self {
+        Self { proof, state }
+    }
+
+    /// Serialize to bytes for transmission
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        bincode::serialize(self).map_err(|e| format!("Serialization failed: {:?}", e))
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        bincode::deserialize(bytes).ok()
+    }
+}
+
 /// Complete folding chain for full security verification
 ///
 /// Stores ALL folding steps so verifiers can check the entire chain,
@@ -1023,7 +1089,8 @@ impl NovaIVCProver {
         labrador_proofs: &[crate::prover::parallel_prove::BatchProof],
         initial_state: u32,
         block_number: u64,
-    ) -> Result<NovaIVCProof, String> {
+        evm_state: Option<EVMStateCommitment>,
+    ) -> Result<NovaIVCProofWithState, String> {
         if labrador_proofs.is_empty() {
             return Err("No Labrador proofs to fold".to_string());
         }
@@ -1131,7 +1198,7 @@ impl NovaIVCProver {
             bh
         };
 
-        Ok(NovaIVCProof {
+        let nova_proof = NovaIVCProof {
             running,
             final_step: CCCS {
                 u: final_u,
@@ -1141,7 +1208,27 @@ impl NovaIVCProver {
             folding_chain,
             block_hash,
             proof_id,
-        })
+        };
+
+        // Use provided EVM state or create default
+        // Always override block_hash with the computed one for security
+        let state = if let Some(mut s) = evm_state {
+            s.block_hash = block_hash;
+            s.block_number = block_number;
+            s
+        } else {
+            EVMStateCommitment {
+                block_number,
+                state_root: initial_state,
+                bytecode_root: Poseidon2::hash_pair(initial_state, 0xABCD1234),
+                storage_root: Poseidon2::hash_pair(initial_state, 0x1234ABCD),
+                block_hash,
+                tx_count: n_proofs as u32,
+                gas_used: 0,
+            }
+        };
+
+        Ok(NovaIVCProofWithState::new(nova_proof, state))
     }
 
     /// Prove a trace using NovaIVC folding

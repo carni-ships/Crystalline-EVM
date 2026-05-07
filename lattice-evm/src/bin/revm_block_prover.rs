@@ -769,28 +769,63 @@ async fn main() {
         .collect();
 
     let fold_start = Instant::now();
+
+    // Build EVM state commitment for bridge/light client use
+    // Convert block.hash (hex string) to [u8; 32]
+    let mut block_hash_bytes = [0u8; 32];
+    let hex_chars: Vec<char> = block.hash.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    for (i, c) in hex_chars.iter().take(64).enumerate() {
+        if let Some(digit) = c.to_digit(16) {
+            if i % 2 == 0 {
+                block_hash_bytes[i / 2] = (digit << 4) as u8;
+            } else {
+                block_hash_bytes[i / 2] += digit as u8;
+            }
+        }
+    }
+
+    let evm_state = lattice_evm::prover::recursive_prove::EVMStateCommitment {
+        block_number,
+        state_root: storage_roots.first().copied().unwrap_or(initial_state),
+        bytecode_root: bytecode_roots.first().copied().unwrap_or(0),
+        storage_root: storage_roots.last().copied().unwrap_or(0),
+        block_hash: block_hash_bytes,
+        tx_count: tx_count as u32,
+        gas_used: total_steps as u64,
+    };
+
     let nova_result = nova_prover.fold_labrador_proofs(
         &prover,
         &batch_proofs,
         initial_state,
         block_number,
+        Some(evm_state),
     );
     let fold_time = fold_start.elapsed().as_millis() as f64;
 
     match nova_result {
-        Ok(nova_proof) => {
+        Ok(proof_with_state) => {
+            let nova_proof = &proof_with_state.proof;
+            let state = &proof_with_state.state;
             println!("NovaIVC folding completed:");
             println!("  Folds: {}", nova_proof.folding_chain.num_folds);
             println!("  Final running commitment: {:x}", nova_proof.running.comm_w);
             println!("  Final step commitment: {:x}", nova_proof.final_step.comm_w);
+            println!("  EVM State: block={}, tx_count={}, gas_used={}",
+                     state.block_number, state.tx_count, state.gas_used);
             println!("  Time: {:.0}ms", fold_time);
 
             let proof_size = std::mem::size_of::<orion_sys::LatticeZKProof>() +
                 nova_proof.folding_chain.num_folds * 4 * 3;
             println!("  Est. proof size: ~{} bytes", proof_size);
 
+            // Include EVM state in proof size estimate
+            let state_size = std::mem::size_of::<lattice_evm::prover::recursive_prove::EVMStateCommitment>();
+            println!("  EVM State size: ~{} bytes", state_size);
+            println!("  Total (proof + state): ~{} bytes", proof_size + state_size);
+
             println!("\nVerifying folded proof...");
-            if verify_nova_proof(&nova_proof) {
+            if verify_nova_proof(&proof_with_state.proof) {
                 println!("✓ Folded proof VERIFIED");
             } else {
                 println!("✗ Folded proof FAILED verification");
