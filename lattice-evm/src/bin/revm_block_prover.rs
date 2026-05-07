@@ -20,16 +20,17 @@ use lattice_evm::evm::{
     full_evm::{execute_evm_with_trace, RevmTraceRow, StateDiff},
 };
 use lattice_evm::crypto::{SparseMerkleTree, Poseidon2};
-use lattice_evm::prover::{Prover, ProverConfig};
+use lattice_evm::prover::{Prover, ProverConfig, SystemResourceMonitor, ResourceCheckFailed};
 use lattice_evm::prover::recursive_prove::{NovaIVCProver, verify_nova_proof};
 use lattice_evm::prover::parallel_prove::BatchProof;
 use orion_sys::LatticeZKProof;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// Maximum trace steps to process per transaction (for memory safety)
-const MAX_TRACE_STEPS: usize = 100_000;
+const MAX_TRACE_STEPS: usize = 500_000;
 
 /// Maximum bytecode cache size (bytes) - roughly 1-2GB for popular contracts
 const MAX_CACHE_SIZE: usize = 1_000_000_000;
@@ -301,29 +302,30 @@ fn process_transaction(
 /// Convert RevmTraceRow to MINIMAL field elements for proving (no padding)
 /// Produces 9 elements per row: PC, opcode, gas_before, gas_after, stack_len, stack[0-3]
 /// This compact format packs ~28 rows per 256-element chunk vs 8 rows with padding
-fn revm_trace_to_field_elements_compact(row: &RevmTraceRow) -> Vec<u32> {
+/// Convert revm trace row to field elements as f32 (avoids u32->f32 conversion later)
+fn revm_trace_to_field_elements_compact_f32(row: &RevmTraceRow) -> Vec<f32> {
     let mut elements = Vec::with_capacity(9);
 
     // PC (mod Q)
-    elements.push((row.pc % 8383489) as u32);
+    elements.push((row.pc % 8383489) as f32);
 
     // Opcode
-    elements.push(row.opcode as u32);
+    elements.push(row.opcode as f32);
 
     // Gas before/after
-    elements.push((row.gas_before % 8383489) as u32);
-    elements.push((row.gas_after % 8383489) as u32);
+    elements.push((row.gas_before % 8383489) as f32);
+    elements.push((row.gas_after % 8383489) as f32);
 
     // Stack: top 4 items as field elements
     let stack_len = row.stack.len().min(4);
-    elements.push(stack_len as u32);
+    elements.push(stack_len as f32);
 
     for i in 0..4 {
         if i < stack_len {
             let val = row.stack[i].as_limbs()[0] % 8383489;
-            elements.push(val as u32);
+            elements.push(val as f32);
         } else {
-            elements.push(0);
+            elements.push(0.0);
         }
     }
 
@@ -508,20 +510,19 @@ async fn main() {
         }
     };
 
-    // Step 5: Process transactions with revm execution
-    println!("\nProcessing {} transactions with revm...", block.transactions.len());
+    // Step 4b: Initialize resource monitor for adaptive batch sizing
+    let resource_monitor = SystemResourceMonitor::new();
+    resource_monitor.refresh();
+    println!("Resource status: {}", resource_monitor.status_summary());
+
+    // Step 5: Process transactions with revm execution (PARALLEL + PIPELINED)
+    println!("\nProcessing {} transactions with revm (parallel)...", block.transactions.len());
 
     let trace_start = Instant::now();
-    let mut all_witness_chunks: Vec<Vec<u32>> = Vec::new();
-    let mut tx_count = 0;
-    let mut total_steps = 0;
-    let mut failed_tx = 0;
-    let mut skipped_transfer = 0;
-    let mut storage_roots: Vec<u32> = Vec::new();
-    let mut bytecode_roots: Vec<u32> = Vec::new();
+    let failed_tx = AtomicUsize::new(0);
 
-    for (idx, tx) in block.transactions.iter().enumerate() {
-        // Determine bytecode based on transaction type
+    // Pre-process transactions to determine bytecode (needed for parallel execution)
+    let tx_data: Vec<_> = block.transactions.iter().enumerate().map(|(idx, tx)| {
         let bytecode: Vec<u8> = if tx.to.is_none() || tx.to.as_ref().is_some_and(|a| a.is_empty()) {
             // Contract creation - input is init code
             if tx.input.starts_with("0x") {
@@ -530,152 +531,171 @@ async fn main() {
                 hex::decode(&tx.input).unwrap_or_default()
             }
         } else if tx.input.is_empty() || tx.input == "0x" {
-            // Simple ETH transfer - no contract call, just STOP
-            skipped_transfer += 1;
-            continue;
+            // Simple ETH transfer - still execute STOP opcode to get trace
+            vec![0x00]
         } else {
             // Contract call - use bytecode from cache
             if let Some(ref to) = tx.to {
-                if let Some(code) = bytecode_cache.get(to) {
-                    if !code.is_empty() {
-                        code.clone()
-                    } else {
-                        vec![0x00]
-                    }
-                } else {
-                    tracing::warn!("No bytecode for contract call to {}", to);
-                    vec![0x00]
-                }
+                bytecode_cache.get(to).cloned().unwrap_or_else(|| vec![0x00])
             } else {
                 vec![0x00]
             }
         };
+        (idx, tx.clone(), bytecode)
+    }).collect();
 
-        // Process transaction with revm
-        match process_transaction(tx, &bytecode) {
-            Ok((_state_diff, trace, smt)) => {
-                if trace.is_empty() {
-                    failed_tx += 1;
-                    continue;
+    // Parallel trace generation using rayon
+    use rayon::prelude::*;
+
+    // Generate directly as f32 to avoid u32->f32 conversion later
+    let parallel_results: Vec<_> = tx_data
+        .par_iter()
+        .filter_map(|(idx, tx, bytecode)| {
+            match process_transaction(tx, bytecode) {
+                Ok((_state_diff, trace, smt)) => {
+                    if trace.is_empty() {
+                        return None;
+                    }
+
+                    let storage_root = smt.root();
+                    let bc_root = build_bytecode_commitment(bytecode);
+
+                    // Convert trace to field elements directly as f32 (avoid u32->f32 conversion)
+                    // Compute total field elements: each trace row produces 9 elements
+                    let total_felts = trace.len() * 9;
+
+                    // Single allocation per transaction: collect all f32s then chunk
+                    let all_felts: Vec<f32> = trace.iter()
+                        .flat_map(revm_trace_to_field_elements_compact_f32)
+                        .collect();
+
+                    // Calculate number of chunks (each chunk is 256 f32s)
+                    let num_chunks = if total_felts <= 256 {
+                        1
+                    } else {
+                        (total_felts + 255) / 256
+                    };
+
+                    Some((*idx, all_felts, num_chunks, storage_root, bc_root, trace.len()))
                 }
-
-                total_steps += trace.len();
-
-                // Get storage root
-                storage_roots.push(smt.root());
-
-                // Build bytecode commitment
-                let bc_root = build_bytecode_commitment(&bytecode);
-                bytecode_roots.push(bc_root);
-
-                // Convert trace to field elements (compact format: 9 elements per row)
-                let field_elements: Vec<u32> = trace.iter()
-                    .flat_map(revm_trace_to_field_elements_compact)
-                    .collect();
-
-                // Split into 256-element chunks for Labrador
-                let chunks: Vec<Vec<u32>> = if field_elements.len() <= 256 {
-                    let mut c = field_elements;
-                    while c.len() < 256 { c.push(0); }
-                    vec![c]
-                } else {
-                    field_elements.chunks(256)
-                        .map(|c| {
-                            let mut chunk = c.to_vec();
-                            while chunk.len() < 256 {
-                                chunk.push(0);
-                            }
-                            chunk
-                        })
-                        .collect()
-                };
-
-                all_witness_chunks.extend(chunks);
-                tx_count += 1;
-
-                if tx_count % 20 == 0 {
-                    println!("  Processed {}/{} transactions, {} steps",
-                        idx + 1, block.transactions.len(), total_steps);
+                Err(e) => {
+                    if failed_tx.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+                        eprintln!("  TX {} failed: {}", idx, e);
+                    }
+                    None
                 }
             }
-            Err(e) => {
-                failed_tx += 1;
-                if failed_tx <= 3 {
-                    println!("  TX {} failed: {}", idx, e);
-                }
-                continue;
+        })
+        .collect();
+
+    // Aggregate results into flat buffer for GPU efficiency
+    // Pre-calculate total capacity needed
+    let total_chunks: usize = parallel_results.iter()
+        .map(|(_, _, num_chunks, _, _, _)| *num_chunks)
+        .sum();
+
+    // Flat layout: [witness0_chunk0...witness0_chunkN, witness1_chunk0..., ...]
+    // Each chunk is exactly 256 f32s
+    let mut all_witness_flat: Vec<f32> = Vec::with_capacity(total_chunks * 256);
+    let mut storage_roots: Vec<u32> = Vec::new();
+    let mut bytecode_roots: Vec<u32> = Vec::new();
+    let mut tx_count = 0;
+    let mut total_steps = 0;
+
+    for (_idx, all_felts, num_chunks, storage_root, bc_root, steps) in parallel_results {
+        let felts_len = all_felts.len();
+
+        // Efficient: process full 256-element chunks
+        let full_chunks = felts_len / 256;
+        for i in 0..full_chunks {
+            let start = i * 256;
+            let end = start + 256;
+            all_witness_flat.extend_from_slice(&all_felts[start..end]);
+        }
+
+        // Handle remainder: pad to 256 elements
+        let remainder = felts_len % 256;
+        if remainder > 0 {
+            let start = full_chunks * 256;
+            all_witness_flat.extend_from_slice(&all_felts[start..start + remainder]);
+            // Pad with zeros to reach 256
+            for _ in remainder..256 {
+                all_witness_flat.push(0.0);
             }
+        } else if num_chunks == 0 {
+            // Edge case: zero-length trace but we still need one chunk
+            all_witness_flat.resize(all_witness_flat.len() + 256, 0.0);
+        }
+
+        storage_roots.push(storage_root);
+        bytecode_roots.push(bc_root);
+        tx_count += 1;
+        total_steps += steps;
+
+        if tx_count % 100 == 0 {
+            println!("  Processed {}/{} transactions, {} steps", tx_count, block.transactions.len(), total_steps);
         }
     }
 
     let trace_time = trace_start.elapsed().as_millis() as f64;
-    println!("\nTrace generation completed (revm-based):");
+    println!("\nTrace generation completed (revm-based, parallel):");
     println!("  Transactions processed: {}", tx_count);
-    println!("  Transactions skipped (transfers): {}", skipped_transfer);
-    println!("  Transactions failed: {}", failed_tx);
-    println!("  Total trace steps: {}", total_steps);
-    println!("  Witness chunks: {}", all_witness_chunks.len());
-    println!("  Storage SMT roots: {}", storage_roots.len());
-    println!("  Bytecode roots: {}", bytecode_roots.len());
+    println!("  Transactions failed: {}", failed_tx.load(std::sync::atomic::Ordering::Relaxed));
+    println!("  Witness chunks: {}", total_chunks);
     println!("  Time: {:.0}ms", trace_time);
 
-    if all_witness_chunks.is_empty() {
+    if total_chunks == 0 {
         println!("No valid traces to prove!");
         bytecode_cache.persist();
         return;
     }
 
-    // Step 6: Prove with Labrador batch in smaller batches to avoid OOM
+    // Step 6: Prove with Labrador batch with adaptive resource management
     println!("\nProving with Labrador batch...");
+    println!("  Flat witness buffer: {} chunks ({} f32s, capacity {})",
+             total_chunks, all_witness_flat.len(), all_witness_flat.capacity());
+    println!("  Resource status: {}", resource_monitor.status_summary());
 
-    // Convert to f32 upfront (this is what Labrador needs)
-    let witness_f32: Vec<Vec<f32>> = all_witness_chunks.iter()
-        .map(|chunk| chunk.iter().map(|&v| v as f32).collect())
-        .collect();
-
-    // Clear original u32 data to free memory
-    drop(all_witness_chunks);
-
+    // Already in f32 format - no conversion needed
     let labrador_start = Instant::now();
 
-    // Process in batches to avoid memory issues
-    const BATCH_SIZE: usize = 100;
-    let mut proofs: Vec<orion_sys::LatticeZKProof> = Vec::new();
-    let mut batch_count = 0;
-    let total_chunks = witness_f32.len();
+    // Determine adaptive batch size based on resources
+    let base_batch_size = resource_monitor.recommended_batch_size();
+    let effective_batch_size = base_batch_size.min(5000).max(100);
+    println!("  Adaptive batch size: {} (based on resource monitor)", effective_batch_size);
 
-    for batch_start in (0..total_chunks).step_by(BATCH_SIZE) {
-        let batch_end = (batch_start + BATCH_SIZE).min(total_chunks);
-        let batch_f32: Vec<&[f32]> = witness_f32[batch_start..batch_end]
-            .iter()
-            .map(|v| v.as_slice())
-            .collect();
+    // Track prover activity for contention detection
+    resource_monitor.prover_active();
+    let result = prove_with_adaptive_batching(
+        &prover,
+        &resource_monitor,
+        &all_witness_flat,
+        total_chunks,
+        effective_batch_size,
+    );
+    resource_monitor.prover_inactive();
 
-        match prover.prove_batch(&batch_f32) {
-            Ok(mut batch_proofs) => {
-                proofs.append(&mut batch_proofs);
-            }
-            Err(e) => {
-                println!("Labrador batch {} failed: {:?}", batch_count, e);
-            }
+    let (all_proofs, batch_times) = match result {
+        Ok((proofs, times)) => (proofs, times),
+        Err((e, partial)) => {
+            println!("  Proving failed after {} proofs: {}", partial.len(), e);
+            bytecode_cache.persist();
+            return;
         }
-
-        batch_count += 1;
-        if batch_count % 10 == 0 {
-            println!("  Processed batch {} ({}/{} chunks)", batch_count, batch_end, total_chunks);
-        }
-    }
-
-    // Clear f32 data after proving
-    drop(witness_f32);
+    };
 
     let labrador_time = labrador_start.elapsed().as_millis() as f64;
-
     println!("Labrador proving completed:");
-    println!("  Proofs generated: {}", proofs.len());
+    println!("  Proofs generated: {}", all_proofs.len());
     println!("  Time: {:.0}ms", labrador_time);
-    if !proofs.is_empty() {
-        println!("  Time per proof: {:.2}ms", labrador_time / proofs.len() as f64);
+    if !batch_times.is_empty() {
+        let avg = batch_times.iter().sum::<u64>() as f64 / batch_times.len() as f64;
+        let max = *batch_times.iter().max().unwrap_or(&0);
+        println!("  Batch times: avg={:.0}ms, max={:.0}ms, batches={}",
+                 avg, max, batch_times.len());
+    }
+    if all_proofs.len() == total_chunks {
+        println!("  Time per proof: {:.2}ms", labrador_time / total_chunks as f64);
     }
 
     // Step 7: Verify all proofs with Labrador (cryptographic verification)
@@ -684,7 +704,7 @@ async fn main() {
     let mut verified = 0;
     let mut failed = 0;
 
-    for (i, proof) in proofs.iter().enumerate() {
+    for (i, proof) in all_proofs.iter().enumerate() {
         match prover.verify_proof(proof) {
             Ok(true) => verified += 1,
             Ok(false) => {
@@ -704,7 +724,7 @@ async fn main() {
     let verify_time = verify_start.elapsed().as_millis() as f64;
 
     println!("Verification completed:");
-    println!("  Verified: {}/{}", verified, proofs.len());
+    println!("  Verified: {}/{}", verified, all_proofs.len());
     println!("  Failed: {}", failed);
     println!("  Time: {:.0}ms", verify_time);
 
@@ -734,7 +754,7 @@ async fn main() {
             .fold(0u32, |acc, c| acc * 16 + c.to_digit(16).unwrap_or(0))
     };
 
-    let batch_proofs: Vec<BatchProof> = proofs.iter()
+    let batch_proofs: Vec<BatchProof> = all_proofs.iter()
         .enumerate()
         .map(|(i, p)| BatchProof {
             batch_id: i,
@@ -793,10 +813,10 @@ async fn main() {
     println!("║  Execution: revm (complete EVM semantics)                          ║");
     println!("║  Bytecode cache: {} contracts, {} bytes                       ║",
         bytecode_cache.len(), bytecode_cache.cache_size_bytes());
-    println!("║  Transactions: {} → {} proven, {} failed, {} skipped          ║",
-        block.transactions.len(), tx_count, failed_tx, skipped_transfer);
+    println!("║  Transactions: {} → {} proven, {} failed                       ║",
+        block.transactions.len(), tx_count, failed_tx.load(Ordering::Relaxed));
     println!("║  Trace steps: {}                                                ║", total_steps);
-    println!("║  Labrador proofs: {}                                           ║", proofs.len());
+    println!("║  Labrador proofs: {}                                           ║", all_proofs.len());
     println!("║  Storage SMTs: {}                                             ║", storage_roots.len());
     println!("╠════════════════════════════════════════════════════════════════════╣");
     println!("║  Fetch time:     {:.0}ms                                        ║", fetch_time);
@@ -806,4 +826,109 @@ async fn main() {
     println!("║  Fold time:     {:.0}ms                                        ║", fold_time);
     println!("║  Total time:    {:.0}ms                                        ║", total_time);
     println!("╚════════════════════════════════════════════════════════════════════╝");
+}
+
+/// Adaptive batch proving with resource monitoring and graceful degradation
+///
+/// Returns (proofs, batch_times_ms) on success, Err((error_message, partial_proofs)) on failure
+fn prove_with_adaptive_batching(
+    prover: &Prover,
+    monitor: &SystemResourceMonitor,
+    all_witness_flat: &[f32],
+    total_chunks: usize,
+    base_batch_size: usize,
+) -> Result<(Vec<orion_sys::LatticeZKProof>, Vec<u64>), (String, Vec<orion_sys::LatticeZKProof>)> {
+    let mut all_proofs: Vec<orion_sys::LatticeZKProof> = Vec::new();
+    let mut batch_times: Vec<u64> = Vec::new();
+    let mut batch_size = base_batch_size;
+    let mut consecutive_failures = 0u8;
+
+    let gpu_available = prover.gpu_available();
+    let use_fused_path = gpu_available;
+
+    if use_fused_path {
+        tracing::info!("Using GPU fused path for batch proving");
+    } else {
+        tracing::info!("Using ANE batch path (GPU unavailable)");
+    }
+
+    let mut offset = 0;
+    while offset < total_chunks {
+        // Refresh resources before each batch
+        monitor.refresh();
+
+        // Adaptively adjust batch size under load
+        let current_recommended = monitor.recommended_batch_size();
+        if current_recommended < batch_size && consecutive_failures > 0 {
+            batch_size = current_recommended.max(100);
+            tracing::warn!("Reducing batch size to {} due to system load", batch_size);
+        }
+
+        let batch_end = (offset + batch_size).min(total_chunks);
+        let batch_len = batch_end - offset;
+
+        // Check memory for this batch
+        if !monitor.can_fit_batch(batch_len) {
+            // Reduce batch size and retry
+            batch_size = (batch_size / 2).max(100);
+            if batch_size < 100 {
+                return Err(("Insufficient memory even for minimum batch".to_string(), all_proofs));
+            }
+            tracing::warn!("Reducing batch size to {} due to memory pressure", batch_size);
+            continue;
+        }
+
+        // Calculate slice positions in flat buffer
+        let start_idx = offset * 256;
+        let end_idx = batch_end * 256;
+        let batch_slice = &all_witness_flat[start_idx..end_idx];
+
+        // Build batch slices
+        let mut batch_f32: Vec<&[f32]> = Vec::with_capacity(batch_len);
+        batch_f32.extend((0..batch_len).map(|i| {
+            let elem_offset = i * 256;
+            &batch_slice[elem_offset..elem_offset + 256]
+        }));
+
+        let batch_start_time = std::time::Instant::now();
+
+        // Try proving with fallback chain
+        let result = if use_fused_path {
+            prover.prove_batch_fused(&batch_f32)
+                .or_else(|_| {
+                    tracing::warn!("GPU batch failed, falling back to ANE");
+                    prover.prove_batch(&batch_f32)
+                })
+        } else {
+            prover.prove_batch(&batch_f32)
+        };
+
+        match result {
+            Ok(mut batch_proofs) => {
+                all_proofs.append(&mut batch_proofs);
+                batch_times.push(batch_start_time.elapsed().as_millis() as u64);
+                consecutive_failures = 0;
+
+                if offset % (batch_size * 10).max(1000) == 0 && offset > 0 {
+                    println!("  Proved {}/{} chunks ({} batches)", offset, total_chunks, batch_times.len());
+                }
+            }
+            Err(e) => {
+                consecutive_failures += 1;
+
+                if consecutive_failures >= 3 {
+                    return Err((format!("3 consecutive batch failures: {:?}", e), all_proofs));
+                }
+
+                // Reduce batch size and retry
+                batch_size = (batch_size / 2).max(100);
+                tracing::warn!("Batch failed, reducing size to {} and retrying", batch_size);
+                continue;
+            }
+        }
+
+        offset = batch_end;
+    }
+
+    Ok((all_proofs, batch_times))
 }

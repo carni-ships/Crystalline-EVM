@@ -22,6 +22,9 @@ revm = { version = "3.0", features = ["std"] }
 ethereum-types = "0.14"
 getrandom = "0.2"
 
+[features]
+lattice-crypto-exploration = []
+
 [dev-dependencies]
 tempfile = "3.10"
 
@@ -76,3 +79,7 @@ path = "src/bin/trace_benchmark.rs"
 [[bin]]
 name = "cross_prover_benchmark"
 path = "src/bin/cross_prover_benchmark.rs"
+
+[[bin]]
+name = "lattice_merkle_benchmark"
+path = "src/bin/lattice_merkle_benchmark.rs"

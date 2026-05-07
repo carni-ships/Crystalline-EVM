@@ -29,8 +29,11 @@
 pub mod full_prove;
 pub mod recursive_prove;
 pub mod parallel_prove;
+pub mod resource_monitor;
 pub mod snark_prover;
 pub mod snark_enhanced_prover;
+
+pub use resource_monitor::{SystemResourceMonitor, ResourceCheckFailed};
 
 pub use snark_prover::{SNARKProver, SNARKProof, BatchSNARKProof, verify_batch, verify_batch_cryptographic, verify_snark_proof_cryptographic};
 pub use snark_enhanced_prover::{SNARKTraceWitness, CombinedProof, FullProvingResult, SNARKEnhancedProver};
